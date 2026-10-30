@@ -1,0 +1,38 @@
+// baf's rules for the Tailscale policy file (design notes section 9,
+// "Policy block"). Paste each part into the matching section of your policy
+// in the admin console (Access controls). Nothing here removes or loosens a
+// rule you already have; it only adds baf's port and permission.
+//
+// This is the T4 subset: your own devices and grokbot. Muse and the relay
+// get their grants when they are built (T6).
+
+// 1. "tagOwners": add this line if grokbot's tag isn't listed there already.
+"tag:grokbot": ["autogroup:admin"],
+
+// 2. "grants": add these three entries.
+// Your devices may message the agents on your other devices.
+{
+  "src": ["autogroup:member"],
+  "dst": ["autogroup:self"],
+  "ip":  ["tcp:7780"],
+  "app": {"github.com/DavidGuooo/baf/msg": [{"to": ["*"]}]},
+},
+// Your devices may message any bot on grokbot.
+{
+  "src": ["autogroup:member"],
+  "dst": ["tag:grokbot"],
+  "ip":  ["tcp:7780"],
+  "app": {"github.com/DavidGuooo/baf/msg": [{"to": ["*"]}]},
+},
+// Grok's bots may message Codex and Claude Code on your devices.
+{
+  "src": ["tag:grokbot"],
+  "dst": ["autogroup:member"],
+  "ip":  ["tcp:7780"],
+  "app": {"github.com/DavidGuooo/baf/msg": [{"to": ["codex", "claude"]}]},
+},
+
+// 3. "tests": add this one. Tailscale checks it every time the policy is
+// saved. It covers network access only; baf's own check of the permission
+// part is the first real run, which prints the grants it received.
+{"src": "tag:grokbot", "accept": ["100.64.0.1:7780"]},

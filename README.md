@@ -6,9 +6,10 @@ Tailscale says who is connecting and what they may do. Design:
 [`docs/design-notes.md`](docs/design-notes.md), vocabulary: [`GLOSSARY.md`](GLOSSARY.md),
 decisions: [`docs/adr/`](docs/adr/).
 
-**Status:** the one-node core works: agents on the same machine can send each other notices
-and requests, and every request gets a Result back automatically. Sending between machines
-comes next (design notes section 8, T4).
+**Status:** agents on one machine send each other notices and requests, and every request
+gets a Result back automatically. Sending between machines is built (push over the tailnet,
+Tailscale identity and permissions, retries for 24 hours, Grok's Bridge doorbell); its first
+real run needs the setup in [`docs/setup-grokbot.md`](docs/setup-grokbot.md).
 
 ## Build
 
@@ -42,6 +43,23 @@ Continue the same Codex thread by passing the thread id the Result came from:
 
 `./baf runs` lists the agent runs and how they ended.
 
+## Other machines
+
+Address an agent on another machine as `node/agent`, using its Tailscale name:
+
+```bash
+./baf request grokbot/tokdev "hello from the iMac"
+./baf outbox
+```
+
+The message waits in this machine's outbox until that machine's baf stores it, retrying for
+24 hours; then you get a notice saying delivery could not be confirmed. Who may message whom
+is set only in your Tailscale policy: paste [`deploy/tailscale-policy.hujson`](deploy/tailscale-policy.hujson)
+into it. Without a matching grant, the receiver refuses the message and the sender gets a
+notice saying why.
+
+`./baf start` runs baf in the background (log in `~/.baf/baf.log`) and `./baf stop` stops it.
+
 ## Agents
 
 Without a config file, this machine has `codex`, `claude` (Claude Code) and `me` (an inbox
@@ -57,13 +75,24 @@ for you). To change that, write `~/.baf/config.json`:
 }
 ```
 
-`dir` is where the agent works (default `~/.baf/work/<agent>`). Requests run in each
+An agent named `"*"` with adapter `"none"` gives every other name an inbox, for machines
+whose agents come and go outside baf (Grok's bots on grokbot). `dir` is where the agent
+works (default `~/.baf/work/<agent>`). Requests run in each
 agent's own auto mode, so nothing waits for a permission prompt: Codex with
 `--approve-for-me` (workspace-write sandbox), Claude Code with `--permission-mode auto
 --permission-prompts none`.
+
+Other settings: `"port"` (default 7780, the same on every machine), `"give_up_after"`
+(default `"24h"`), and `"doorbells"` (see [`docs/setup-grokbot.md`](docs/setup-grokbot.md)).
 
 ## Develop
 
 ```bash
 go test -race ./...
+```
+
+Release builds (one static file per platform, no C toolchain needed):
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o dist/baf-linux-amd64 ./cmd/baf
 ```

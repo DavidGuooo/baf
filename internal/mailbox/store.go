@@ -50,6 +50,25 @@ CREATE TABLE IF NOT EXISTS shared_threads (
 	last_used INTEGER NOT NULL,
 	PRIMARY KEY (agent, peer, thread_id)
 );
+
+-- Messages this node's agents sent to other nodes, held here until the
+-- receiver's mailbox gives a receipt (ADR-0002: messages wait at the sender).
+CREATE TABLE IF NOT EXISTS outbox (
+	seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+	id          TEXT NOT NULL UNIQUE,
+	to_node     TEXT NOT NULL,
+	queue       TEXT NOT NULL,  -- receiver + sender + sender's thread: order is kept per queue
+	envelope    TEXT NOT NULL,
+	state       TEXT NOT NULL,  -- waiting | handed | failed
+	attempts    INTEGER NOT NULL DEFAULT 0,
+	rung        INTEGER NOT NULL DEFAULT 0, -- 1 once the receiver's doorbell rang for it
+	last_error  TEXT NOT NULL DEFAULT '',
+	created_at  INTEGER NOT NULL,
+	next_try_at INTEGER NOT NULL,
+	expires_at  INTEGER NOT NULL, -- give up after this (24 hours by default)
+	done_at     INTEGER
+);
+CREATE INDEX IF NOT EXISTS outbox_by_queue ON outbox (state, queue, seq);
 `
 
 // openDB opens (or creates) the SQLite file at path.

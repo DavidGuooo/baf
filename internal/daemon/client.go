@@ -67,6 +67,15 @@ func (c *Client) Read(agentName, id string) (mailbox.Item, error) {
 	return it, c.do("GET", path, nil, &it)
 }
 
+func (c *Client) Outbox(all bool) ([]mailbox.OutItem, error) {
+	path := "/v1/outbox"
+	if all {
+		path += "?all=1"
+	}
+	var items []mailbox.OutItem
+	return items, c.do("GET", path, nil, &items)
+}
+
 func (c *Client) Runs(limit int) ([]mailbox.RunInfo, error) {
 	var runs []mailbox.RunInfo
 	return runs, c.do("GET", "/v1/runs?limit="+strconv.Itoa(limit), nil, &runs)

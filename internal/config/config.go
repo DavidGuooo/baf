@@ -10,9 +10,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/DavidGuooo/baf/internal/agent"
 	"github.com/DavidGuooo/baf/internal/envelope"
+	"github.com/DavidGuooo/baf/internal/mailbox"
+	"github.com/DavidGuooo/baf/internal/transport"
 )
 
 // Config is ~/.baf/config.json. Every field is optional.
@@ -22,6 +25,24 @@ type Config struct {
 
 	// Agents maps an agent name to how it runs.
 	Agents map[string]AgentConfig `json:"agents,omitempty"`
+
+	// Port is baf's port on every node (default 7780).
+	Port int `json:"port,omitempty"`
+
+	// GiveUpAfter is how long to keep trying to hand a message to another
+	// node, as a Go duration such as "24h" (the default).
+	GiveUpAfter string `json:"give_up_after,omitempty"`
+
+	// Doorbells are the doorbell keys other nodes' owners gave this node,
+	// by node name. For grokbot it is the Bridge bot's routine webhook.
+	Doorbells map[string]DoorbellConfig `json:"doorbells,omitempty"`
+}
+
+// DoorbellConfig is one node's doorbell. The key stays in its own file
+// (readable only by you), so config.json holds no secrets.
+type DoorbellConfig struct {
+	URL     string `json:"url"`
+	KeyFile string `json:"key_file"`
 }
 
 // AgentConfig says how to run one agent.
@@ -71,7 +92,38 @@ func Load(home string) (Config, error) {
 	if len(c.Agents) == 0 {
 		c.Agents = Default().Agents
 	}
+	if c.GiveUpAfter != "" {
+		if _, err := time.ParseDuration(c.GiveUpAfter); err != nil {
+			return Config{}, fmt.Errorf("config.json give_up_after: %w", err)
+		}
+	}
 	return c, nil
+}
+
+// GiveUp returns GiveUpAfter as a duration (0 means the default).
+func (c Config) GiveUp() time.Duration {
+	d, _ := time.ParseDuration(c.GiveUpAfter)
+	return d
+}
+
+// Bells reads each doorbell's key from its file.
+func (c Config) Bells() (map[string]transport.Bell, error) {
+	out := map[string]transport.Bell{}
+	for node, d := range c.Doorbells {
+		path, err := expand(d.KeyFile)
+		if err != nil {
+			return nil, err
+		}
+		key, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("doorbell key for %s: %w", node, err)
+		}
+		if d.URL == "" {
+			return nil, fmt.Errorf("doorbell for %s has no url", node)
+		}
+		out[node] = transport.Bell{URL: d.URL, Key: strings.TrimSpace(string(key))}
+	}
+	return out, nil
 }
 
 // Adapters builds an adapter for every agent, creating working directories
@@ -79,10 +131,18 @@ func Load(home string) (Config, error) {
 func (c Config) Adapters(home string) (map[string]agent.Adapter, error) {
 	out := map[string]agent.Adapter{}
 	for _, name := range c.names() {
+		ac := c.Agents[name]
+		if name == mailbox.AnyAgent {
+			// "*": every other agent name gets an inbox (see mailbox.AnyAgent).
+			if ac.Adapter != "none" {
+				return nil, fmt.Errorf(`agent "*" must use adapter "none": it gives any name an inbox, it can't run one`)
+			}
+			out[name] = nil
+			continue
+		}
 		if _, err := envelope.ParseAddress("x/" + name); err != nil {
 			return nil, fmt.Errorf("agent name %q: %w", name, err)
 		}
-		ac := c.Agents[name]
 		if ac.Adapter == "none" {
 			out[name] = nil
 			continue

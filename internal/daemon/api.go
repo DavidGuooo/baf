@@ -48,8 +48,6 @@ func Handler(mb *mailbox.Mailbox, agents []string) http.Handler {
 		switch {
 		case errors.As(err, &rej):
 			writeJSON(w, http.StatusUnprocessableEntity, apiError{Error: rej.Reason, Rejected: true})
-		case errors.Is(err, mailbox.ErrRemoteNotSupported):
-			writeJSON(w, http.StatusNotImplemented, apiError{Error: err.Error()})
 		case err != nil:
 			writeJSON(w, http.StatusInternalServerError, apiError{Error: err.Error()})
 		default:
@@ -71,11 +69,26 @@ func Handler(mb *mailbox.Mailbox, agents []string) http.Handler {
 		switch {
 		case errors.Is(err, mailbox.ErrNotFound):
 			writeJSON(w, http.StatusNotFound, apiError{Error: err.Error()})
+		case errors.Is(err, mailbox.ErrNotForYou):
+			writeJSON(w, http.StatusForbidden, apiError{Error: err.Error()})
 		case err != nil:
 			writeJSON(w, http.StatusInternalServerError, apiError{Error: err.Error()})
 		default:
 			writeJSON(w, http.StatusOK, item)
 		}
+	})
+
+	mux.HandleFunc("GET /v1/outbox", func(w http.ResponseWriter, r *http.Request) {
+		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+		if err != nil || limit <= 0 {
+			limit = 50
+		}
+		items, err := mb.Outbox(r.URL.Query().Get("all") == "1", limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiError{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, nonNil(items))
 	})
 
 	mux.HandleFunc("GET /v1/runs", func(w http.ResponseWriter, r *http.Request) {

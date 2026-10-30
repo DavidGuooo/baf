@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/DavidGuooo/baf/internal/envelope"
@@ -18,17 +19,21 @@ type Item struct {
 	Read       bool              `json:"read"`
 }
 
-// ErrNotFound means no such message for that agent.
+// ErrNotFound means no message has that id.
 var ErrNotFound = errors.New("no such message")
 
-// Inbox lists messages for agentName, oldest first. Unless all is true it
-// leaves out messages the agent has already read.
+// ErrNotForYou means the message exists but is addressed to another agent.
+var ErrNotForYou = errors.New("that message is not addressed to you")
+
+// Inbox lists messages on this node, oldest first: those addressed to
+// agentName, or to every agent if agentName is empty. Unless all is true it
+// leaves out messages already read.
 func (m *Mailbox) Inbox(agentName string, all bool) ([]Item, error) {
-	q := `SELECT sender_node, envelope, state, received_at, read_at FROM messages WHERE to_agent = ?`
+	q := `SELECT sender_node, envelope, state, received_at, read_at FROM messages WHERE (? = '' OR to_agent = ?)`
 	if !all {
 		q += ` AND read_at IS NULL`
 	}
-	rows, err := m.db.Query(q+` ORDER BY seq`, agentName)
+	rows, err := m.db.Query(q+` ORDER BY seq`, agentName, agentName)
 	if err != nil {
 		return nil, err
 	}
@@ -44,20 +49,33 @@ func (m *Mailbox) Inbox(agentName string, all bool) ([]Item, error) {
 	return items, rows.Err()
 }
 
-// Read returns one message for agentName and marks it read.
+// Read returns the message with this id and marks it read. The id alone
+// finds it. If agentName is not empty, Read opens it only when it is
+// addressed to that agent, so an agent can't open another's mail by mistake.
+// (Agents sharing a node could still read the database; this is a guard
+// against mistakes, not a security boundary.)
 func (m *Mailbox) Read(agentName, id string) (Item, error) {
-	row := m.db.QueryRow(`SELECT sender_node, envelope, state, received_at, read_at
-		FROM messages WHERE to_agent = ? AND id = ? ORDER BY seq LIMIT 1`, agentName, id)
-	it, err := scanItem(row)
+	var (
+		seq     int64
+		toAgent string
+	)
+	err := m.db.QueryRow(`SELECT seq, to_agent FROM messages WHERE id = ? ORDER BY seq LIMIT 1`, id).Scan(&seq, &toAgent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Item{}, ErrNotFound
 	}
 	if err != nil {
 		return Item{}, err
 	}
+	if agentName != "" && agentName != toAgent {
+		return Item{}, fmt.Errorf("%w: %s is for %s, not %s", ErrNotForYou, id, toAgent, agentName)
+	}
+	it, err := scanItem(m.db.QueryRow(`SELECT sender_node, envelope, state, received_at, read_at
+		FROM messages WHERE seq = ?`, seq))
+	if err != nil {
+		return Item{}, err
+	}
 	if !it.Read {
-		_, err = m.db.Exec(`UPDATE messages SET read_at = ? WHERE to_agent = ? AND id = ? AND read_at IS NULL`,
-			m.now().UnixMilli(), agentName, id)
+		_, err = m.db.Exec(`UPDATE messages SET read_at = ? WHERE seq = ? AND read_at IS NULL`, m.now().UnixMilli(), seq)
 	}
 	return it, err
 }

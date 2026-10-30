@@ -144,6 +144,10 @@ func TestRequestGetsAutomaticResult(t *testing.T) {
 	if res.FromAgent != "worker" {
 		t.Fatalf("from_agent %q", res.FromAgent)
 	}
+	// The worker got the request in its run, so it counts as read.
+	if unread, _ := h.mb.Inbox("worker", false); len(unread) != 0 {
+		t.Fatalf("worker's handled request still unread: %+v", unread)
+	}
 }
 
 func TestNoticeGetsNoResult(t *testing.T) {
@@ -351,5 +355,53 @@ func TestReadMarksRead(t *testing.T) {
 	}
 	if _, err := h.mb.Read("me", "nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v", err)
+	}
+	// The id alone finds it; a name only filters.
+	if it, err := h.mb.Read("", id); err != nil || it.Message.ID != id {
+		t.Fatalf("read without a name: %v", err)
+	}
+	if _, err := h.mb.Read("worker", id); !errors.Is(err, ErrNotForYou) {
+		t.Fatalf("read as the wrong agent: err = %v", err)
+	}
+
+	// Inbox: no name lists every agent's messages; a name filters.
+	h.send(envelope.Envelope{Kind: envelope.Notice, To: "box/other", Body: envelope.Body{Text: "for other"}})
+	everyone, _ := h.mb.Inbox("", true)
+	mine, _ := h.mb.Inbox("me", true)
+	if len(everyone) != 3 || len(mine) != 1 { // request to worker, result to me, notice to other
+		t.Fatalf("inbox: %d for everyone, %d for me; want 3 and 1", len(everyone), len(mine))
+	}
+}
+
+func TestAnyAgentGivesEveryNameAnInbox(t *testing.T) {
+	worker := &fakeAgent{}
+	mb, err := Open(Options{
+		Path:   filepath.Join(t.TempDir(), "mailbox.db"),
+		Node:   "grok",
+		Agents: map[string]agent.Adapter{AnyAgent: nil, "worker": worker},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mb.Close()
+
+	// A bot nobody listed can send and receive.
+	if _, err := mb.Send(envelope.Envelope{Kind: envelope.Notice, FromAgent: "newbot", To: "grok/otherbot",
+		Body: envelope.Body{Text: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := mb.Inbox("otherbot", true)
+	if len(items) != 1 || items[0].State != "inbox" {
+		t.Fatalf("otherbot's inbox: %+v", items)
+	}
+	// baf's own name is still not an agent.
+	var rej *Rejection
+	if _, err := mb.Send(envelope.Envelope{Kind: envelope.Notice, FromAgent: SystemAgent, To: "grok/otherbot",
+		Body: envelope.Body{Text: "x"}}); !errors.As(err, &rej) {
+		t.Fatalf("sending as %q: %v", SystemAgent, err)
+	}
+	if _, err := Open(Options{Path: filepath.Join(t.TempDir(), "x.db"), Node: "grok",
+		Agents: map[string]agent.Adapter{AnyAgent: worker}}); err == nil {
+		t.Fatal(`"*" with an adapter must be refused`)
 	}
 }

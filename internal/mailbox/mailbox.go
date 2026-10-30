@@ -3,8 +3,9 @@
 // threads a sender may continue, hands messages to agents one run at a time
 // per thread, and answers every Request with a Result when its run ends.
 //
-// This build delivers only between agents on the same node. Pushing to other
-// nodes comes next and slots in behind Send.
+// A message between agents on the same node moves inside the mailbox. One
+// for another node waits in this mailbox's outbox until that node's mailbox
+// gives a receipt (outbox.go).
 package mailbox
 
 import (
@@ -34,6 +35,10 @@ type Receipt struct {
 	ID        string    `json:"id"`
 	StoredAt  time.Time `json:"stored_at"`
 	Duplicate bool      `json:"duplicate,omitempty"` // already stored by an earlier try
+
+	// Queued means the message is for another node and waits in this
+	// node's outbox until that node's mailbox stores it.
+	Queued bool `json:"queued,omitempty"`
 }
 
 // Rejection is a message the mailbox refused to store. Reason is written for
@@ -46,9 +51,22 @@ func reject(format string, args ...any) error {
 	return &Rejection{Reason: fmt.Sprintf(format, args...)}
 }
 
-// ErrRemoteNotSupported is returned for a message to another node, which
-// this build cannot push yet.
-var ErrRemoteNotSupported = errors.New("sending to another machine is not built yet")
+// ErrRemoteNotSupported is returned for a message to another node when the
+// mailbox was opened without a Transport.
+var ErrRemoteNotSupported = errors.New("this mailbox cannot send to other machines")
+
+// SystemAgent is the sender name on notices baf itself writes, such as a
+// delivery-failure notice. No configured agent may use it.
+const SystemAgent = "baf"
+
+// AnyAgent, as a key in Options.Agents, gives every other valid agent name
+// on this node an inbox. It suits nodes whose agents come and go outside
+// baf, like the bots on grokbot: who may send to them is still decided by
+// the Tailscale policy, and Bridge refuses names that are not real bots.
+const AnyAgent = "*"
+
+// DefaultGiveUpAfter is how long the outbox keeps trying to hand a message over.
+const DefaultGiveUpAfter = 24 * time.Hour
 
 // Options configures a Mailbox.
 type Options struct {
@@ -56,23 +74,42 @@ type Options struct {
 	Node string // this node's name, as other nodes address it
 
 	// Agents served by this mailbox. A nil adapter means the agent only has
-	// an inbox (for example "me", the owner at a terminal).
+	// an inbox (for example "me", the owner at a terminal). The key AnyAgent
+	// (with a nil adapter) gives every other name an inbox.
 	Agents map[string]agent.Adapter
 
 	// RunEnv returns extra environment for an agent's run. Optional.
 	RunEnv func(agentName string) []string
+
+	// Transport pushes messages to other nodes. Without one, the mailbox
+	// only delivers between its own agents.
+	Transport Transport
+
+	// Doorbell wakes another node's agents. Optional.
+	Doorbell Doorbell
+
+	GiveUpAfter time.Duration // default DefaultGiveUpAfter
+	RetryBase   time.Duration // first retry delay, doubling up to RetryMax; default 5s
+	RetryMax    time.Duration // default 2 minutes
 
 	Now func() time.Time // for tests; defaults to time.Now
 }
 
 // Mailbox is safe for concurrent use.
 type Mailbox struct {
-	db     *sql.DB
-	node   string
-	agents map[string]agent.Adapter
-	runEnv func(string) []string
-	now    func() time.Time
-	wake   chan struct{} // nudges Run to look for claimable messages
+	db          *sql.DB
+	node        string
+	agents      map[string]agent.Adapter
+	runEnv      func(string) []string
+	now         func() time.Time
+	transport   Transport
+	doorbell    Doorbell
+	giveUpAfter time.Duration
+	retryBase   time.Duration
+	retryMax    time.Duration
+
+	wake       chan struct{} // nudges Run to look for claimable messages
+	outboxWake chan struct{} // nudges the outbox to look for messages to push
 }
 
 // Open opens the mailbox and settles anything a previous crash left behind.
@@ -83,6 +120,21 @@ func Open(opts Options) (*Mailbox, error) {
 	if opts.RunEnv == nil {
 		opts.RunEnv = func(string) []string { return nil }
 	}
+	if opts.GiveUpAfter <= 0 {
+		opts.GiveUpAfter = DefaultGiveUpAfter
+	}
+	if opts.RetryBase <= 0 {
+		opts.RetryBase = 5 * time.Second
+	}
+	if opts.RetryMax <= 0 {
+		opts.RetryMax = 2 * time.Minute
+	}
+	if _, ok := opts.Agents[SystemAgent]; ok {
+		return nil, fmt.Errorf("%q is reserved for baf's own notices; rename that agent", SystemAgent)
+	}
+	if a, ok := opts.Agents[AnyAgent]; ok && a != nil {
+		return nil, fmt.Errorf("%q can only give inboxes; it cannot run an agent", AnyAgent)
+	}
 	if _, err := envelope.ParseAddress(opts.Node + "/x"); err != nil {
 		return nil, fmt.Errorf("bad node name %q: %w", opts.Node, err)
 	}
@@ -91,12 +143,18 @@ func Open(opts Options) (*Mailbox, error) {
 		return nil, err
 	}
 	m := &Mailbox{
-		db:     db,
-		node:   opts.Node,
-		agents: opts.Agents,
-		runEnv: opts.RunEnv,
-		now:    opts.Now,
-		wake:   make(chan struct{}, 1),
+		db:          db,
+		node:        opts.Node,
+		agents:      opts.Agents,
+		runEnv:      opts.RunEnv,
+		now:         opts.Now,
+		transport:   opts.Transport,
+		doorbell:    opts.Doorbell,
+		giveUpAfter: opts.GiveUpAfter,
+		retryBase:   opts.RetryBase,
+		retryMax:    opts.RetryMax,
+		wake:        make(chan struct{}, 1),
+		outboxWake:  make(chan struct{}, 1),
 	}
 	if err := m.recover(); err != nil {
 		db.Close()
@@ -111,6 +169,19 @@ func (m *Mailbox) Close() error { return m.db.Close() }
 // Node is the name of the node this mailbox serves.
 func (m *Mailbox) Node() string { return m.node }
 
+// agentFor returns the adapter for name (nil = inbox only) and whether name
+// is an agent here at all. baf's own name never is.
+func (m *Mailbox) agentFor(name string) (agent.Adapter, bool) {
+	if name == SystemAgent {
+		return nil, false
+	}
+	if a, ok := m.agents[name]; ok {
+		return a, true
+	}
+	_, wildcard := m.agents[AnyAgent]
+	return nil, wildcard
+}
+
 // Send stores a message from one of this node's own agents. It fills in the
 // version and id if they are empty and returns the receiver's receipt.
 func (m *Mailbox) Send(env envelope.Envelope) (Receipt, error) {
@@ -120,8 +191,17 @@ func (m *Mailbox) Send(env envelope.Envelope) (Receipt, error) {
 	if env.ID == "" {
 		env.ID = envelope.NewID()
 	}
-	if _, ok := m.agents[env.FromAgent]; !ok {
+	if _, ok := m.agentFor(env.FromAgent); !ok {
 		return Receipt{}, reject("%q is not an agent on %s", env.FromAgent, m.node)
+	}
+	// A typo in the machine name fails now, not after 24 hours of retries.
+	if to, err := envelope.ParseAddress(env.To); err == nil && to.Node != m.node && m.transport != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := m.transport.Known(ctx, to.Node)
+		cancel()
+		if err != nil {
+			return Receipt{}, &Rejection{Reason: err.Error()}
+		}
 	}
 	var r Receipt
 	err := m.inTx(func(tx *sql.Tx) (err error) {
@@ -148,16 +228,25 @@ func (m *Mailbox) Accept(env envelope.Envelope, from Principal) (Receipt, error)
 	return r, err
 }
 
-// sendTx routes env from a local agent. Only same-node delivery exists so far.
+// sendTx routes env from a local agent: straight into the receiver's inbox
+// on this node, or into the outbox for another node.
 func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 	if err := env.Validate(); err != nil {
 		return Receipt{}, &Rejection{Reason: err.Error()}
 	}
 	to, _ := envelope.ParseAddress(env.To) // checked by Validate
-	if to.Node != m.node {
-		return Receipt{}, ErrRemoteNotSupported
+	var (
+		r   Receipt
+		err error
+	)
+	switch {
+	case to.Node == m.node:
+		r, err = m.acceptTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent})
+	case m.transport == nil:
+		err = ErrRemoteNotSupported
+	default:
+		r, err = m.enqueueTx(tx, env, to)
 	}
-	r, err := m.acceptTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent})
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -172,6 +261,12 @@ func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 }
 
 func (m *Mailbox) acceptTx(tx *sql.Tx, env envelope.Envelope, from Principal) (Receipt, error) {
+	return m.storeTx(tx, env, from, true)
+}
+
+// storeTx stores env for one of this node's agents. checkThread is false
+// only for baf's own notices, which may continue any of the agent's threads.
+func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, checkThread bool) (Receipt, error) {
 	if err := env.Validate(); err != nil {
 		return Receipt{}, &Rejection{Reason: err.Error()}
 	}
@@ -179,7 +274,7 @@ func (m *Mailbox) acceptTx(tx *sql.Tx, env envelope.Envelope, from Principal) (R
 	if to.Node != m.node {
 		return Receipt{}, reject("this mailbox is %s, not %s", m.node, to.Node)
 	}
-	adapter, ok := m.agents[to.Agent]
+	adapter, ok := m.agentFor(to.Agent)
 	if !ok {
 		return Receipt{}, reject("there is no agent %q on %s", to.Agent, m.node)
 	}
@@ -195,7 +290,7 @@ func (m *Mailbox) acceptTx(tx *sql.Tx, env envelope.Envelope, from Principal) (R
 		return Receipt{}, err
 	}
 
-	if env.ToThread != "" {
+	if env.ToThread != "" && checkThread {
 		if err := m.useThreadTx(tx, to.Agent, from.String(), env.ToThread); err != nil {
 			return Receipt{}, err
 		}
@@ -250,11 +345,19 @@ func (m *Mailbox) useThreadTx(tx *sql.Tx, agentName, peer, threadID string) erro
 	return err
 }
 
-// Run hands waiting messages to their agents until ctx is cancelled. Then it
-// waits until every run it started has been stopped and recorded.
+// Run hands waiting messages to their agents and pushes outgoing ones until
+// ctx is cancelled. Then it waits until every run it started has been
+// stopped and recorded.
 func (m *Mailbox) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	if m.transport != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runOutbox(ctx)
+		}()
+	}
 	for {
 		claims, err := m.claim()
 		if err != nil {
@@ -275,11 +378,13 @@ func (m *Mailbox) Run(ctx context.Context) {
 	}
 }
 
-// signal tells Run there may be something new to claim.
+// signal tells Run there may be something new to claim or push.
 func (m *Mailbox) signal() {
-	select {
-	case m.wake <- struct{}{}:
-	default: // a wake-up is already pending
+	for _, ch := range []chan struct{}{m.wake, m.outboxWake} {
+		select {
+		case ch <- struct{}{}:
+		default: // a wake-up is already pending
+		}
 	}
 }
 
@@ -344,7 +449,9 @@ func (m *Mailbox) claim() ([]claimed, error) {
 			if err := json.Unmarshal(p.raw, &env); err != nil {
 				return fmt.Errorf("message %d: %w", p.seq, err)
 			}
-			if _, err := tx.Exec(`UPDATE messages SET state = 'running' WHERE seq = ?`, p.seq); err != nil {
+			// The agent gets the whole message in its run, so it counts as read.
+			if _, err := tx.Exec(`UPDATE messages SET state = 'running', read_at = COALESCE(read_at, ?) WHERE seq = ?`,
+				m.now().UnixMilli(), p.seq); err != nil {
 				return err
 			}
 			res, err := tx.Exec(`INSERT INTO runs (message_seq, agent, thread_id, state, started_at)
@@ -375,7 +482,8 @@ func (m *Mailbox) execute(ctx context.Context, c claimed) {
 		Env:          m.runEnv(c.agent),
 	}
 	slog.Info("run started", "run", c.runID, "agent", c.agent, "message", c.env.ID, "from", c.sender)
-	out := m.agents[c.agent].Run(ctx, job, func(threadID string) {
+	adapter, _ := m.agentFor(c.agent) // claim only takes messages for agents with an adapter
+	out := adapter.Run(ctx, job, func(threadID string) {
 		// Record the thread as soon as the agent reports it, so a crash
 		// later still leaves the thread locked to this run's record.
 		if _, err := m.db.Exec(`UPDATE runs SET thread_id = ? WHERE id = ?`, threadID, c.runID); err != nil {
@@ -440,7 +548,7 @@ func (m *Mailbox) endRunTx(tx *sql.Tx, runID int64, agentName, threadID string, 
 	}
 	if _, err := m.sendTx(tx, result); err != nil {
 		// The run's end is still recorded; only the answer is lost. This
-		// can't happen for same-node senders, and remote push comes next.
+		// happens only if the sender's agent no longer exists here.
 		slog.Error("send result", "request", req.ID, "to", sender, "err", err)
 	}
 	return nil
