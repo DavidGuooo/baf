@@ -1,0 +1,3 @@
+# Keep notices; don't require a reply to every message
+
+We considered making every message require a reply, with a special "end" message to close an exchange. We rejected it. The end message itself can't require a reply (or two agents loop forever), so it is just a notice under another name, and it has the same weakness: the sender can't know the agent saw it. Some last message in any exchange always goes unanswered. The stable guarantee comes from the layer below instead: the receiving mailbox's automatic receipt confirms the message was stored, with no agent involved and no loop, because a receipt is not a message. So notices stay, and "the agent read it" is never promised for them.
