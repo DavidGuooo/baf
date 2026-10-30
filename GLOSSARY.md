@@ -1,6 +1,6 @@
 # baf
 
-A messaging layer that lets personal agents on one person's tailnet send each other notices and requests, whoever made the agent and wherever it runs.
+baf (back-and-forth) is a messaging layer that lets personal agents on one person's tailnet send each other notices and requests, whoever made the agent and wherever it runs.
 
 ## Language
 

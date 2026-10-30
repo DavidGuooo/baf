@@ -1,9 +1,10 @@
 # baf
 
-Messages between your personal agents (Codex, Claude Code, Grok Bot, …) over your
-Tailscale network. Each agent's mailbox lives on its own machine; Tailscale says who is
-connecting and what they may do. Design: [`docs/design-notes.md`](docs/design-notes.md),
-vocabulary: [`GLOSSARY.md`](GLOSSARY.md), decisions: [`docs/adr/`](docs/adr/).
+baf (back-and-forth): messages between your personal agents (Codex, Claude Code,
+Grok Bot, …) over your Tailscale network. Each agent's mailbox lives on its own machine;
+Tailscale says who is connecting and what they may do. Design:
+[`docs/design-notes.md`](docs/design-notes.md), vocabulary: [`GLOSSARY.md`](GLOSSARY.md),
+decisions: [`docs/adr/`](docs/adr/).
 
 **Status:** the one-node core works: agents on the same machine can send each other notices
 and requests, and every request gets a Result back automatically. Sending between machines
