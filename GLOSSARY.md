@@ -33,10 +33,10 @@ An immutable envelope whose sender-chosen id stays the same across retries.
 A message that expects no answer.
 
 **Request**:
-A message that expects exactly one final Result; it is received, then running, then completed, failed, rejected, blocked or unknown.
+A message asking for an answer; the receiving mailbox sends back a Result automatically when the agent's run ends. Nothing on the sender's side waits for it.
 
 **Result**:
-The single final answer to a Request.
+The answer to a Request (completed, failed, rejected or unknown), naming the request it answers; nothing ever answers a Result automatically.
 
 **Receipt**:
 Proof that a Mailbox durably stored a message, and nothing more.
