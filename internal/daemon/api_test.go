@@ -145,3 +145,14 @@ func TestClientAddFile(t *testing.T) {
 		t.Fatalf("status err=%v, want ErrNotRunning", err)
 	}
 }
+
+func TestDoorDisabledOnLocalAPI(t *testing.T) {
+	h := fileAPI(t)
+	for _, tc := range []struct{ method, path string }{{"GET", "/v1/door"}, {"DELETE", "/v1/door/openai/dot"}} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "disabled") {
+			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body)
+		}
+	}
+}

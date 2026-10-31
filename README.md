@@ -104,8 +104,9 @@ Other settings: `"port"` (default 7780, the same on every machine), `"give_up_af
 ## Door agents
 
 The mailbox can hold Door agents such as `openai/dot` on the Relay. Add
-`"door": {"enabled": true}` to the Relay's config (off by default), and name the Door
-agents in its Tailscale capability grant, alongside `"relay": true`:
+`"door": {"enabled": true, "public_url": "https://YOUR-RELAY.YOUR-TAILNET.ts.net"}`
+to the Relay's config (off by default), and name the Door agents in its Tailscale
+capability grant, alongside `"relay": true`:
 
 ```json
 {"relay": true, "door": {"openai/dot": ["codex", "me"]}}
@@ -121,10 +122,12 @@ automatic Results, stays in the Relay's inbox for `openai/dot`; it never starts 
 run. A Door agent's `door` entry limits which agents on the Relay it may message. The
 Relay's own `to` permission does not give extra permission to a Door agent.
 
-Only the mailbox side exists so far: there is no Public door listener, sign-in, MCP or
-events yet. Removing a name from the policy stops it sending and fetching, without deleting
-its stored mail. Files from Door agents, and sending between Door agents and other
-machines, are not supported yet.
+The Public door now serves OAuth sign-in and tokens, with a tailnet-only Allow page.
+`baf door list` shows connectors; `baf door revoke openai/dot` deletes one. See
+[Public door sign-in](docs/public-door.md) for setup and token lifetimes. MCP tools and
+events are not implemented yet: valid bearer requests return 501 for now. Removing a
+name from the policy stops its access without deleting its stored mail. Files from
+Door agents, and sending between Door agents and other machines, remain unsupported.
 
 ## Develop
 

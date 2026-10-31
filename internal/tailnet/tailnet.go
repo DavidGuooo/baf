@@ -6,6 +6,7 @@ package tailnet
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -101,8 +102,9 @@ type Client struct {
 
 // Self is this machine on the tailnet.
 type Self struct {
-	Node  string       // e.g. "imac"
-	Addrs []netip.Addr // its Tailscale addresses
+	Node    string       // e.g. "imac"
+	DNSName string       // full name used by this machine's HTTPS certificate
+	Addrs   []netip.Addr // its Tailscale addresses
 }
 
 // Self returns this machine's name and Tailscale addresses.
@@ -114,7 +116,12 @@ func (c *Client) Self(ctx context.Context) (Self, error) {
 	if st.Self == nil || st.Self.DNSName == "" {
 		return Self{}, errors.New("tailscale reports no name for this machine; is it logged in?")
 	}
-	return Self{Node: shortName(st.Self.DNSName), Addrs: st.TailscaleIPs}, nil
+	return Self{Node: shortName(st.Self.DNSName), DNSName: strings.TrimSuffix(st.Self.DNSName, "."), Addrs: st.TailscaleIPs}, nil
+}
+
+// GetCertificate uses Tailscale's local certificate service for sign-in HTTPS.
+func (c *Client) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return c.lc.GetCertificate(hello)
 }
 
 // SelfPeer reads this node's own grants through WhoIs, just like a caller's.

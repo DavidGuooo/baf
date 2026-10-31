@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/DavidGuooo/baf/internal/door"
 	"github.com/DavidGuooo/baf/internal/envelope"
 	"github.com/DavidGuooo/baf/internal/mailbox"
 )
@@ -29,9 +30,37 @@ type apiError struct {
 
 // Handler serves the local API for mb.
 func Handler(mb *mailbox.Mailbox, agents []string) http.Handler {
+	return HandlerWithDoor(mb, agents, nil)
+}
+
+// HandlerWithDoor adds connector management to the owner-only socket API.
+func HandlerWithDoor(mb *mailbox.Mailbox, agents []string, d *door.Server) http.Handler {
 	sorted := append([]string(nil), agents...)
 	sort.Strings(sorted)
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/door", func(w http.ResponseWriter, r *http.Request) {
+		if d == nil {
+			writeJSON(w, http.StatusServiceUnavailable, apiError{Error: "the Public door is disabled"})
+			return
+		}
+		list, err := d.List()
+		if err != nil {
+			writeJSON(w, 500, apiError{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, list)
+	})
+	mux.HandleFunc("DELETE /v1/door/{vendor}/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if d == nil {
+			writeJSON(w, http.StatusServiceUnavailable, apiError{Error: "the Public door is disabled"})
+			return
+		}
+		if err := d.Revoke(r.PathValue("vendor") + "/" + r.PathValue("name")); err != nil {
+			writeJSON(w, 400, apiError{Error: err.Error()})
+			return
+		}
+		writeJSON(w, 200, struct{}{})
+	})
 
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, Status{Node: mb.Node(), Agents: sorted})

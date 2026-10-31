@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/DavidGuooo/baf/internal/config"
+	"github.com/DavidGuooo/baf/internal/door"
 	"github.com/DavidGuooo/baf/internal/mailbox"
 	"github.com/DavidGuooo/baf/internal/tailnet"
 	"github.com/DavidGuooo/baf/internal/transport"
@@ -26,6 +28,14 @@ func SocketPath(home string) string { return filepath.Join(home, "baf.sock") }
 // is cancelled. On the way out it stops running agents, records how their
 // runs ended and queues their Results before returning.
 func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Client) error {
+	if err := cfg.Door.Validate(); err != nil {
+		return err
+	}
+	if cfg.Door.Enabled && (cfg.Door.SigninPort == cfg.Port || (cfg.Port == 0 && cfg.Door.SigninPort == transport.DefaultPort)) {
+		return errors.New("door.signin_port must differ from baf's mailbox port")
+	}
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
@@ -41,6 +51,12 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 	self, err := waitForTailscale(ctx, ts, time.Minute)
 	if err != nil {
 		return fmt.Errorf("asking Tailscale about this machine: %w", err)
+	}
+	if cfg.Door.Enabled {
+		u, _ := url.Parse(cfg.Door.PublicURL)
+		if u.Hostname() != self.DNSName {
+			return fmt.Errorf("door.public_url must name this Relay's Tailscale DNS name: %s", self.DNSName)
+		}
 	}
 	node := self.Node
 	if cfg.Node != "" {
@@ -76,10 +92,11 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 	if err != nil {
 		return err
 	}
+	defer localLn.Close()
 
-	var door mailbox.DoorIdentity
+	var doorIdentity mailbox.DoorIdentity
 	if cfg.Door.Enabled {
-		door = ts
+		doorIdentity = ts
 	}
 	mb, err := mailbox.Open(mailbox.Options{
 		Path:        filepath.Join(home, "mailbox.db"),
@@ -88,7 +105,7 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 		RunEnv:      runEnv(home),
 		Transport:   &transport.Client{Lookup: ts.Lookup, Port: port},
 		Doorbell:    &transport.Doorbells{From: node, Bells: bells},
-		Door:        door,
+		Door:        doorIdentity,
 		GiveUpAfter: cfg.GiveUp(),
 	})
 	if err != nil {
@@ -97,11 +114,34 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 	}
 	defer mb.Close()
 
+	var publicDoor *door.Server
+	var doorListeners *door.Listeners
+	if cfg.Door.Enabled {
+		signinURL := "https://" + net.JoinHostPort(self.DNSName, strconv.Itoa(cfg.Door.SigninPort))
+		publicDoor, err = door.Open(door.Options{Path: filepath.Join(home, "door.db"), PublicURL: cfg.Door.PublicURL, SigninURL: signinURL, Policy: mb, Identity: ts})
+		if err != nil {
+			return fmt.Errorf("opening Public door: %w", err)
+		}
+		defer publicDoor.Close()
+		doorListeners, err = publicDoor.Listen(self.Addrs, cfg.Door.SigninPort, cfg.Door.PublicListen, ts.GetCertificate)
+		if err != nil {
+			return err
+		}
+		defer doorListeners.Close()
+		go func() {
+			select {
+			case err := <-doorListeners.Errors():
+				stop(fmt.Errorf("Public door listener stopped: %w", err))
+			case <-ctx.Done():
+			}
+		}()
+	}
+
 	var names []string
 	for n := range adapters {
 		names = append(names, n)
 	}
-	local := &http.Server{Handler: Handler(mb, names), ReadHeaderTimeout: 10 * time.Second}
+	local := &http.Server{Handler: HandlerWithDoor(mb, names, publicDoor), ReadHeaderTimeout: 10 * time.Second}
 	peers := &http.Server{Handler: transport.Handler(mb, ts), ReadHeaderTimeout: 10 * time.Second}
 	serve := func(srv *http.Server, ln net.Listener) {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -130,6 +170,9 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 	local.Shutdown(shutdownCtx)
 	os.Remove(socket)
 	slog.Info("baf stopped")
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
 	return nil
 }
 

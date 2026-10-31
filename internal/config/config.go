@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,9 +44,44 @@ type Config struct {
 	Door DoorConfig `json:"door,omitempty"`
 }
 
-// DoorConfig switches on the Public door's mailbox support. Off by default.
+// DoorConfig switches on the Public door. Off by default.
 type DoorConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled      bool   `json:"enabled,omitempty"`
+	PublicURL    string `json:"public_url,omitempty"`
+	SigninPort   int    `json:"signin_port,omitempty"`
+	PublicListen string `json:"public_listen,omitempty"`
+}
+
+// Validate fills the listener defaults and checks enabled door settings before
+// the daemon opens any listeners. Funnel must forward to a loopback address.
+func (d *DoorConfig) Validate() error {
+	if !d.Enabled {
+		return nil
+	}
+	u, err := url.Parse(d.PublicURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || strings.Contains(d.PublicURL, "#") || u.RawPath != "" ||
+		(u.Host != u.Hostname() && u.Host != u.Hostname()+":443") ||
+		(u.Path != "" && u.Path != "/") || net.ParseIP(u.Hostname()) != nil {
+		return errors.New("door.public_url must be an HTTPS Funnel base URL, such as https://imac.example.ts.net (no path, query or credentials)")
+	}
+	d.PublicURL = strings.TrimSuffix(d.PublicURL, "/")
+	if d.SigninPort == 0 {
+		d.SigninPort = 8444
+	}
+	if d.SigninPort < 1 || d.SigninPort > 65535 || d.SigninPort == 443 {
+		return errors.New("door.signin_port must be between 1 and 65535 and different from Funnel's port 443")
+	}
+	if d.PublicListen == "" {
+		d.PublicListen = "127.0.0.1:7790"
+	}
+	host, port, err := net.SplitHostPort(d.PublicListen)
+	ip := net.ParseIP(host)
+	p, perr := strconv.Atoi(port)
+	if err != nil || ip == nil || !ip.IsLoopback() || perr != nil || p < 1 || p > 65535 {
+		return errors.New("door.public_listen must be a loopback IP and port, such as 127.0.0.1:7790")
+	}
+	return nil
 }
 
 // DoorbellConfig is one node's doorbell. The key stays in its own file

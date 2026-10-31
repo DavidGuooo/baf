@@ -13,9 +13,23 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/DavidGuooo/baf/internal/door"
 	"github.com/DavidGuooo/baf/internal/envelope"
 	"github.com/DavidGuooo/baf/internal/mailbox"
 )
+
+func (c *Client) DoorList() ([]door.Connector, error) {
+	var list []door.Connector
+	return list, c.do("GET", "/v1/door", nil, &list)
+}
+
+func (c *Client) DoorRevoke(name string) error {
+	a, err := envelope.ParseAddress(name)
+	if err != nil {
+		return fmt.Errorf("Door agent must be vendor/name: %w", err)
+	}
+	return c.do("DELETE", "/v1/door/"+url.PathEscape(a.Node)+"/"+url.PathEscape(a.Agent), nil, nil)
+}
 
 // Client talks to a running daemon over its Unix socket.
 type Client struct {
@@ -127,6 +141,9 @@ func (c *Client) doBody(method, path string, body io.Reader, out any) error {
 			e.Error = resp.Status
 		}
 		return fmt.Errorf("%s", e.Error)
+	}
+	if out == nil {
+		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

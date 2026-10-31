@@ -51,13 +51,16 @@ Usage:
   baf status ID                  follow a message you sent: handed over, running (and doing what), answered
   baf outbox [--all]             messages waiting to go to other machines (--all: sent ones too)
   baf runs [--limit N]           list recent agent runs
+  baf door list [--json]         list policy Door agents and their connectors
+  baf door revoke VENDOR/NAME    delete that Door agent's connector and tokens
   baf wait [--as NAME] ID...     wait until these messages have arrived (default --timeout 10m)
   baf flush [--as NAME]          wait until NAME's sent messages have left this machine (default --timeout 10m)
 
 ADDR is node/agent, or just agent for one on this machine. TEXT "-" reads stdin;
 it may be left out when you attach files.
 On the Relay, ADDR may also be a Door agent such as openai/dot, named in the
-Tailscale policy. Holding Door agents requires config: "door": {"enabled": true}.
+Tailscale policy. The Public door requires "door": {"enabled": true,
+"public_url": "https://YOUR-RELAY.YOUR-TAILNET.ts.net"} in config.json.
 
 Options for send and request:
   --file PATH        attach a file (repeatable; up to 20, 100 MB each)
@@ -105,6 +108,8 @@ func main() {
 		err = outbox(args)
 	case "runs":
 		err = runs(args)
+	case "door":
+		err = doorCommand(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
