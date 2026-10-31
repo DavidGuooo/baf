@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS runs_by_state ON runs (state, agent, thread_id);
 
--- The "shared with" list (design notes section 6): agent gave thread_id to
+-- The "shared with" list: agent gave thread_id to
 -- peer, so peer may continue that thread. Expires 30 days after last use.
 CREATE TABLE IF NOT EXISTS shared_threads (
 	agent     TEXT NOT NULL,

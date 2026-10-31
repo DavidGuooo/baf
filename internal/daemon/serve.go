@@ -24,8 +24,7 @@ func SocketPath(home string) string { return filepath.Join(home, "baf.sock") }
 
 // Serve runs the mailbox, its local API and its tailnet listener until ctx
 // is cancelled. On the way out it stops running agents, records how their
-// runs ended and queues their Results before returning (design notes
-// section 7, "cleanup before quitting").
+// runs ended and queues their Results before returning.
 func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Client) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err

@@ -1,7 +1,7 @@
 // Package transport moves messages between mailboxes on different nodes
 // over the tailnet: plain HTTP, which WireGuard already encrypts and
 // authenticates. The receiving side never trusts the message for who sent
-// it; it asks Tailscale (design notes section 3).
+// it; it asks Tailscale.
 package transport
 
 import (
@@ -167,8 +167,8 @@ type Bell struct {
 }
 
 // Doorbells rings the doorbells this node holds keys for. It implements
-// mailbox.Doorbell. For Grok, the bell is Bridge's routine webhook (design
-// notes section 9): the JSON body reaches the routine, which hands each
+// mailbox.Doorbell. For Grok, the bell is Bridge's routine webhook: the JSON
+// body reaches the routine, which hands each
 // message id to the addressed bot.
 type Doorbells struct {
 	From  string          // this node's name, so the ring says who rang

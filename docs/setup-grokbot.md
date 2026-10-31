@@ -1,6 +1,6 @@
 # Setting up T4: Grok ↔ Codex across machines
 
-T4 (design notes section 8): a Grok bot on `grokbot` sends a request to `imac/codex`
+T4: a Grok bot on `grokbot` sends a request to `imac/codex`
 over the tailnet, and the Result comes back to the bot by ringing the Bridge bot. The code
 is done and tested with two mailboxes in one process. These are the steps only you can
 take, in order.
@@ -71,7 +71,7 @@ a bot run `baf` without waiting for your approval?
 
 ## 4. Give the iMac Bridge's doorbell key
 
-The doorbell key goes only to machines you trust (design notes section 9). On the iMac:
+The doorbell key goes only to machines you trust. On the iMac:
 
 ```bash
 mkdir -p ~/.baf/keys && chmod 700 ~/.baf/keys

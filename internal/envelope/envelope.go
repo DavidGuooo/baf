@@ -1,5 +1,5 @@
-// Package envelope defines the message that moves between mailboxes
-// (design notes section 5) and the node/agent address format.
+// Package envelope defines the message that moves between mailboxes and
+// the node/agent address format.
 package envelope
 
 import (
@@ -52,7 +52,7 @@ type Envelope struct {
 	Origin string `json:"origin,omitempty"`
 
 	// FromThread is the sender's own thread; ToThread is the receiver's
-	// thread to continue (empty = start a new one). See section 6.
+	// thread to continue (empty = start a new one).
 	FromThread string `json:"from_thread,omitempty"`
 	ToThread   string `json:"to_thread,omitempty"`
 

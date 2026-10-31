@@ -9,7 +9,7 @@ import (
 
 // Codex runs the Codex CLI headless: `codex exec --json` for a new thread,
 // `codex exec resume --json ID` to continue one. Facts it relies on were
-// checked in T0 (design notes section 8).
+// checked on a real install (T0).
 type Codex struct {
 	Bin     string // path to codex; defaults to "codex"
 	Dir     string // working directory for new threads
@@ -37,8 +37,7 @@ func (c Codex) Run(ctx context.Context, job Job, onThread func(string)) Outcome 
 	}
 	var args []string
 	if job.ResumeThread == "" {
-		// v1 runs foreign requests in Codex's own auto mode (design notes
-		// section 9, Agent layer): it never stops to ask, because nobody is
+		// v1 runs foreign requests in Codex's own auto mode: it never stops to ask, because nobody is
 		// there to answer. --approve-for-me implies the workspace-write
 		// sandbox, and Codex refuses -s alongside it.
 		args = []string{"exec", "--json", "--skip-git-repo-check", "-C", c.Dir, "--approve-for-me"}

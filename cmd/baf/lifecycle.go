@@ -19,7 +19,7 @@ import (
 
 // These commands are for machines where nothing keeps baf running, like
 // grokbot: a routine run brings the mailbox up and waits for the messages its
-// doorbell announced (design notes section 9, Mailbox layer).
+// doorbell announced.
 
 // start runs `baf serve` in the background unless it is already running,
 // and waits until it answers.

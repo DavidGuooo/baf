@@ -1,5 +1,5 @@
-// baf's rules for the Tailscale policy file (design notes section 9,
-// "Policy block"). Paste each part into the matching section of your policy
+// baf's rules for the Tailscale policy file (see
+// docs/adr/0003-permissions-only-in-tailscale-policy.md). Paste each part into the matching section of your policy
 // in the admin console (Access controls). Nothing here removes or loosens a
 // rule you already have; it only adds baf's port and permission.
 //

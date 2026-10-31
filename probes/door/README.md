@@ -1,7 +1,8 @@
 # Door probe: can a ChatGPT Dot use baf's public door?
 
-A throwaway test server, not part of baf. It answers the account tests from design notes
-section 9 (*Agents that can't join the tailnet*) before the real door is built:
+A throwaway test server, not part of baf. Agents that can't join the tailnet (a ChatGPT
+Dot) will reach baf through a public door; this answers three account tests before the
+real door is built:
 
 1. **Can a Dot send?** ChatGPT calls the `send_to_owner` tool (a write action).
 2. **Does an MCP event start a Dot task?** The Dot subscribes to `message.created`; you

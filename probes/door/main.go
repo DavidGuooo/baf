@@ -1,5 +1,5 @@
-// Command door is a throwaway probe for the public door (design notes
-// section 9, "Agents that can't join the tailnet"). It answers the account
+// Command door is a throwaway probe for the public door, through which
+// agents that can't join the tailnet will reach baf. It answers the account
 // tests before the real door is built:
 //
 //  1. Can a ChatGPT Dot call a write tool on a custom MCP server?

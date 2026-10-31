@@ -69,7 +69,7 @@ func runProcess(ctx context.Context, bin string, args []string, dir string, extr
 }
 
 // cleanEnv drops variables that would make a nested Claude Code think it is
-// running inside another Claude Code session (design notes section 8, T0).
+// running inside another Claude Code session.
 func cleanEnv(env []string) []string {
 	out := env[:0:0]
 	for _, kv := range env {

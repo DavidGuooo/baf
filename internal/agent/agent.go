@@ -1,5 +1,5 @@
-// Package agent is the seam between a mailbox and the agents it serves
-// (design notes section 4). Each kind of agent gets an Adapter that knows how
+// Package agent is the seam between a mailbox and the agents it serves.
+// Each kind of agent gets an Adapter that knows how
 // to start it, how to continue one of its threads, and how its run ended.
 package agent
 

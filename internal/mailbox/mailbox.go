@@ -555,8 +555,8 @@ func (m *Mailbox) endRunTx(tx *sql.Tx, runID int64, agentName, threadID string, 
 }
 
 // recover settles runs a crash left open: the mailbox knows only that they
-// started, so each becomes "unknown" and is never run again (design notes
-// section 7). It also forgets shared threads that have expired.
+// started, so each becomes "unknown" and is never run again.
+// It also forgets shared threads that have expired.
 func (m *Mailbox) recover() error {
 	return m.inTx(func(tx *sql.Tx) error {
 		rows, err := tx.Query(`SELECT r.id, r.agent, r.thread_id, m.sender_node, m.envelope

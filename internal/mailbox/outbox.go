@@ -13,8 +13,8 @@ import (
 	"github.com/DavidGuooo/baf/internal/envelope"
 )
 
-// Transport hands messages to other nodes' mailboxes (design notes section
-// 4: tailnet HTTP in production, in-memory in tests).
+// Transport hands messages to other nodes' mailboxes (tailnet HTTP in
+// production, in-memory in tests).
 type Transport interface {
 	// Push hands env to node's mailbox and returns its receipt. A
 	// *Rejection means the receiver refused the message for good; any other
