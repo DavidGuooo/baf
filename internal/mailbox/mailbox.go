@@ -483,12 +483,22 @@ func (m *Mailbox) execute(ctx context.Context, c claimed) {
 	}
 	slog.Info("run started", "run", c.runID, "agent", c.agent, "message", c.env.ID, "from", c.sender)
 	adapter, _ := m.agentFor(c.agent) // claim only takes messages for agents with an adapter
-	out := adapter.Run(ctx, job, func(threadID string) {
-		// Record the thread as soon as the agent reports it, so a crash
-		// later still leaves the thread locked to this run's record.
-		if _, err := m.db.Exec(`UPDATE runs SET thread_id = ? WHERE id = ?`, threadID, c.runID); err != nil {
-			slog.Error("record thread id", "run", c.runID, "err", err)
-		}
+	out := adapter.Run(ctx, job, agent.Report{
+		Thread: func(threadID string) {
+			// Record the thread as soon as the agent reports it, so a crash
+			// later still leaves the thread locked to this run's record.
+			if _, err := m.db.Exec(`UPDATE runs SET thread_id = ? WHERE id = ?`, threadID, c.runID); err != nil {
+				slog.Error("record thread id", "run", c.runID, "err", err)
+			}
+		},
+		Doing: func(text string) {
+			// Only for whoever asks (Progress); nothing is sent anywhere.
+			_, err := m.db.Exec(`UPDATE runs SET doing = ?, doing_at = ? WHERE id = ? AND doing <> ?`,
+				text, m.now().UnixMilli(), c.runID, text)
+			if err != nil {
+				slog.Error("record what the agent is doing", "run", c.runID, "err", err)
+			}
+		},
 	})
 	if ctx.Err() != nil {
 		out.State = envelope.Failed

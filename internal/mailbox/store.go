@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS runs (
 	state       TEXT NOT NULL,  -- running | completed | failed | unknown
 	detail      TEXT NOT NULL DEFAULT '',
 	started_at  INTEGER NOT NULL,
-	ended_at    INTEGER
+	ended_at    INTEGER,
+	doing       TEXT NOT NULL DEFAULT '', -- what the agent last started doing, from its own output
+	doing_at    INTEGER
 );
 CREATE INDEX IF NOT EXISTS runs_by_state ON runs (state, agent, thread_id);
 
@@ -71,6 +73,13 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE INDEX IF NOT EXISTS outbox_by_queue ON outbox (state, queue, seq);
 `
 
+// addedColumns were added to a table after it was first created. CREATE
+// TABLE IF NOT EXISTS leaves an older table as it was, so openDB adds them.
+var addedColumns = []struct{ table, column, decl string }{
+	{"runs", "doing", "TEXT NOT NULL DEFAULT ''"},
+	{"runs", "doing_at", "INTEGER"},
+}
+
 // openDB opens (or creates) the SQLite file at path.
 func openDB(path string) (*sql.DB, error) {
 	q := url.Values{}
@@ -88,6 +97,17 @@ func openDB(path string) (*sql.DB, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
+	}
+	for _, c := range addedColumns {
+		var n int
+		err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c.table, c.column).Scan(&n)
+		if err == nil && n == 0 {
+			_, err = db.Exec("ALTER TABLE " + c.table + " ADD COLUMN " + c.column + " " + c.decl)
+		}
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("add column %s.%s: %w", c.table, c.column, err)
+		}
 	}
 	return db, nil
 }

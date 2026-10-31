@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -39,7 +40,14 @@ type pushResponse struct {
 	Rejected bool             `json:"rejected,omitempty"` // final: don't retry
 }
 
-// Handler serves POST /v1/push, where other mailboxes hand over messages.
+// progressResponse is the body of every answer to a progress question.
+type progressResponse struct {
+	Progress *mailbox.Progress `json:"progress,omitempty"`
+	Error    string            `json:"error,omitempty"`
+}
+
+// Handler serves POST /v1/push, where other mailboxes hand over messages,
+// and GET /v1/progress/{id}, where they ask about one they handed over.
 func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/push", func(w http.ResponseWriter, r *http.Request) {
@@ -84,10 +92,40 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 			reply(w, http.StatusOK, pushResponse{Receipt: &receipt})
 		}
 	})
+
+	// Only the node that sent a message may ask about it, and only while the
+	// policy still lets it message that agent (ADR-0006).
+	mux.HandleFunc("GET /v1/progress/{id}", func(w http.ResponseWriter, r *http.Request) {
+		peer, err := id.WhoIs(r.Context(), r.RemoteAddr)
+		if err != nil {
+			slog.Warn("progress question from unknown caller", "addr", r.RemoteAddr, "err", err)
+			reply(w, http.StatusForbidden, progressResponse{Error: "unknown caller"})
+			return
+		}
+		msgID := r.PathValue("id")
+		p, err := mb.Progress(peer.Node, msgID)
+		switch {
+		case errors.Is(err, mailbox.ErrNotFound):
+			reply(w, http.StatusNotFound, progressResponse{
+				Error: fmt.Sprintf("%s has no message %s from %s", mb.Node(), msgID, peer.Node)})
+			return
+		case err != nil:
+			slog.Error("read progress", "id", msgID, "err", err)
+			reply(w, http.StatusInternalServerError, progressResponse{Error: "could not read the message's progress"})
+			return
+		}
+		to, _ := envelope.ParseAddress(p.To)
+		if !peer.MayMessage(to.Agent) {
+			reply(w, http.StatusForbidden, progressResponse{
+				Error: fmt.Sprintf("%s may no longer message %s, so it can't follow its messages there", peer.Node, p.To)})
+			return
+		}
+		reply(w, http.StatusOK, progressResponse{Progress: &p})
+	})
 	return mux
 }
 
-func reply(w http.ResponseWriter, code int, v pushResponse) {
+func reply(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
@@ -123,25 +161,16 @@ func (c *Client) Push(ctx context.Context, node string, env envelope.Envelope) (
 		// Try anyway: Tailscale's view can lag behind a node that just woke.
 		slog.Debug("pushing to a node Tailscale shows offline", "node", node)
 	}
-	port := c.Port
-	if port == 0 {
-		port = DefaultPort
-	}
 	body, err := json.Marshal(env)
 	if err != nil {
 		return mailbox.Receipt{}, err
 	}
-	url := "http://" + net.JoinHostPort(addr.String(), strconv.Itoa(port)) + "/v1/push"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.url(addr, "/v1/push"), bytes.NewReader(body))
 	if err != nil {
 		return mailbox.Receipt{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	hc := c.HTTP
-	if hc == nil {
-		hc = http.DefaultClient
-	}
-	resp, err := hc.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return mailbox.Receipt{}, err
 	}
@@ -158,6 +187,54 @@ func (c *Client) Push(ctx context.Context, node string, env envelope.Envelope) (
 	default:
 		return mailbox.Receipt{}, fmt.Errorf("%s answered %s: %s", node, resp.Status, pr.Error)
 	}
+}
+
+func (c *Client) Progress(ctx context.Context, node, id string) (mailbox.Progress, error) {
+	addr, _, err := c.Lookup(ctx, node)
+	if err != nil {
+		return mailbox.Progress{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.url(addr, "/v1/progress/"+url.PathEscape(id)), nil)
+	if err != nil {
+		return mailbox.Progress{}, err
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return mailbox.Progress{}, err
+	}
+	defer resp.Body.Close()
+	var pr progressResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&pr); err != nil {
+		if resp.StatusCode == http.StatusNotFound {
+			// A baf from before progress answers with the server's plain 404.
+			return mailbox.Progress{}, fmt.Errorf("%s runs an older baf that can't report progress; update it there", node)
+		}
+		return mailbox.Progress{}, fmt.Errorf("%s answered %s with an unreadable body", node, resp.Status)
+	}
+	switch {
+	case resp.StatusCode == http.StatusOK && pr.Progress != nil:
+		return *pr.Progress, nil
+	case pr.Error != "":
+		return mailbox.Progress{}, errors.New(pr.Error) // written to be read as it is
+	default:
+		return mailbox.Progress{}, fmt.Errorf("%s answered %s", node, resp.Status)
+	}
+}
+
+// url is the address of path on the mailbox at addr.
+func (c *Client) url(addr netip.Addr, path string) string {
+	port := c.Port
+	if port == 0 {
+		port = DefaultPort
+	}
+	return "http://" + net.JoinHostPort(addr.String(), strconv.Itoa(port)) + path
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP == nil {
+		return http.DefaultClient
+	}
+	return c.HTTP
 }
 
 // Bell is one node's doorbell: a webhook and the key its owner gave us.

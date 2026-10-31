@@ -78,6 +78,19 @@ func Handler(mb *mailbox.Mailbox, agents []string) http.Handler {
 		}
 	})
 
+	// What became of a message this node sent: for `baf status`.
+	mux.HandleFunc("GET /v1/sent/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s, err := mb.SentStatus(r.Context(), r.PathValue("id"))
+		switch {
+		case errors.Is(err, mailbox.ErrNotFound):
+			writeJSON(w, http.StatusNotFound, apiError{Error: "no agent on " + mb.Node() + " sent a message with that id"})
+		case err != nil:
+			writeJSON(w, http.StatusInternalServerError, apiError{Error: err.Error()})
+		default:
+			writeJSON(w, http.StatusOK, s)
+		}
+	})
+
 	mux.HandleFunc("GET /v1/outbox", func(w http.ResponseWriter, r *http.Request) {
 		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
 		if err != nil || limit <= 0 {

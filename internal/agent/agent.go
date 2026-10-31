@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/DavidGuooo/baf/internal/envelope"
@@ -34,20 +35,66 @@ type Outcome struct {
 
 // Adapter runs one kind of agent.
 //
-// Run blocks until the agent's run ends. It calls onThread as soon as the
-// agent's thread id is known, before the agent does any work if the agent
-// allows it, so the mailbox can record the id before anything can go wrong.
-// When ctx is cancelled (baf is stopping), Run stops the agent's process and
-// returns a Failed outcome.
+// Run blocks until the agent's run ends, telling report what it learns on
+// the way. When ctx is cancelled (baf is stopping), Run stops the agent's
+// process and returns a Failed outcome.
 type Adapter interface {
-	Run(ctx context.Context, job Job, onThread func(threadID string)) Outcome
+	Run(ctx context.Context, job Job, report Report) Outcome
+}
+
+// Report is how an adapter tells the mailbox about a run while it runs.
+// Either func may be nil.
+type Report struct {
+	// Thread is called as soon as the agent's thread id is known, before the
+	// agent does any work if the agent allows it, so the mailbox can record
+	// the id before anything can go wrong.
+	Thread func(threadID string)
+
+	// Doing is called with one line saying what the agent has just started
+	// doing ("running: go test ./..."). Adapters read it from the agent's own
+	// output, so the agent never has to report anything (ADR-0006).
+	Doing func(text string)
+}
+
+func (r Report) thread(id string) {
+	if r.Thread != nil {
+		r.Thread(id)
+	}
+}
+
+func (r Report) doing(text string) {
+	if r.Doing != nil && text != "" {
+		r.Doing(oneLine(text, maxDoing))
+	}
 }
 
 // Func turns a plain function into an Adapter. Tests use it as the fake agent.
-type Func func(ctx context.Context, job Job, onThread func(string)) Outcome
+type Func func(ctx context.Context, job Job, report Report) Outcome
 
-func (f Func) Run(ctx context.Context, job Job, onThread func(string)) Outcome {
-	return f(ctx, job, onThread)
+func (f Func) Run(ctx context.Context, job Job, report Report) Outcome {
+	return f(ctx, job, report)
+}
+
+// maxDoing is the longest a Doing line gets.
+const maxDoing = 160
+
+// oneLine squeezes s onto one line of at most n characters.
+func oneLine(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
+}
+
+// shortPath shows p relative to the agent's working directory when it is
+// inside it, so a Doing line names files the way the project does.
+func shortPath(dir, p string) string {
+	rel, err := filepath.Rel(dir, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return p
+	}
+	return rel
 }
 
 // Prompt is the text an agent receives for a message: who sent it, what kind

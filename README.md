@@ -30,9 +30,14 @@ In another terminal, ask Codex something. You are the agent `me`:
 
 ```bash
 ./baf request codex "What is 17*23? Reply with just the number."
+./baf status <request id>
 ./baf inbox
 ./baf read <result id>
 ```
+
+`./baf status` follows a message you sent: whether it was handed over, whether its run has
+started and what the agent is doing ("running: go test ./..."), and whether the Result is back.
+The agent reports nothing itself; baf reads it from the agent's own output.
 
 Continue the same Codex thread by passing the thread id the Result came from:
 
@@ -52,7 +57,8 @@ Address an agent on another machine as `node/agent`, using its Tailscale name:
 ```
 
 The message waits in this machine's outbox until that machine's baf stores it, retrying for
-24 hours; then you get a notice saying delivery could not be confirmed. Who may message whom
+24 hours; then you get a notice saying delivery could not be confirmed. `./baf status <id>`
+works here too: it asks that machine's baf how the message is doing there. Who may message whom
 is set only in your Tailscale policy: paste [`deploy/tailscale-policy.hujson`](deploy/tailscale-policy.hujson)
 into it. Without a matching grant, the receiver refuses the message and the sender gets a
 notice saying why.

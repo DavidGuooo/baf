@@ -23,6 +23,10 @@ type Transport interface {
 
 	// Known returns an error if there is no machine called node to send to.
 	Known(ctx context.Context, node string) error
+
+	// Progress asks node's mailbox about message id, which this node handed
+	// to it (ADR-0006).
+	Progress(ctx context.Context, node, id string) (Progress, error)
 }
 
 // Doorbell wakes another node's agents so they look at their mailbox, for
@@ -316,22 +320,46 @@ func (m *Mailbox) failureNoticeTx(tx *sql.Tx, orig envelope.Envelope, text strin
 
 // OutItem is one message in the outbox, for `baf outbox`.
 type OutItem struct {
-	ID        string    `json:"id"`
-	To        string    `json:"to"`
-	Kind      string    `json:"kind"`
-	FromAgent string    `json:"from_agent"`
-	State     string    `json:"state"` // waiting | handed | failed
-	Attempts  int       `json:"attempts"`
-	LastError string    `json:"last_error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	NextTry   time.Time `json:"next_try_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID        string     `json:"id"`
+	To        string     `json:"to"`
+	Kind      string     `json:"kind"`
+	FromAgent string     `json:"from_agent"`
+	State     string     `json:"state"` // waiting | handed | failed
+	Attempts  int        `json:"attempts"`
+	LastError string     `json:"last_error,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	NextTry   time.Time  `json:"next_try_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	DoneAt    *time.Time `json:"done_at,omitempty"` // when it was handed over, or failed
+}
+
+const outItemColumns = `envelope, state, attempts, last_error, created_at, next_try_at, expires_at, done_at`
+
+// scanOutItem reads one outbox row selected with outItemColumns.
+func scanOutItem(s scanner) (OutItem, envelope.Envelope, error) {
+	var (
+		it                     OutItem
+		env                    envelope.Envelope
+		raw                    []byte
+		created, next, expires int64
+		done                   sql.NullInt64
+	)
+	if err := s.Scan(&raw, &it.State, &it.Attempts, &it.LastError, &created, &next, &expires, &done); err != nil {
+		return OutItem{}, env, err
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return OutItem{}, env, err
+	}
+	it.ID, it.To, it.Kind, it.FromAgent = env.ID, env.To, string(env.Kind), env.FromAgent
+	it.CreatedAt, it.NextTry, it.ExpiresAt = time.UnixMilli(created), time.UnixMilli(next), time.UnixMilli(expires)
+	it.DoneAt = timePtr(done)
+	return it, env, nil
 }
 
 // Outbox lists outgoing messages, newest first. Unless all is true it lists
 // only those still waiting.
 func (m *Mailbox) Outbox(all bool, limit int) ([]OutItem, error) {
-	q := `SELECT envelope, state, attempts, last_error, created_at, next_try_at, expires_at FROM outbox`
+	q := `SELECT ` + outItemColumns + ` FROM outbox`
 	if !all {
 		q += ` WHERE state = 'waiting'`
 	}
@@ -342,20 +370,10 @@ func (m *Mailbox) Outbox(all bool, limit int) ([]OutItem, error) {
 	defer rows.Close()
 	var out []OutItem
 	for rows.Next() {
-		var (
-			it                     OutItem
-			raw                    []byte
-			created, next, expires int64
-		)
-		if err := rows.Scan(&raw, &it.State, &it.Attempts, &it.LastError, &created, &next, &expires); err != nil {
+		it, _, err := scanOutItem(rows)
+		if err != nil {
 			return nil, err
 		}
-		var env envelope.Envelope
-		if err := json.Unmarshal(raw, &env); err != nil {
-			return nil, err
-		}
-		it.ID, it.To, it.Kind, it.FromAgent = env.ID, env.To, string(env.Kind), env.FromAgent
-		it.CreatedAt, it.NextTry, it.ExpiresAt = time.UnixMilli(created), time.UnixMilli(next), time.UnixMilli(expires)
 		out = append(out, it)
 	}
 	return out, rows.Err()

@@ -67,6 +67,11 @@ func (c *Client) Read(agentName, id string) (mailbox.Item, error) {
 	return it, c.do("GET", path, nil, &it)
 }
 
+func (c *Client) SentStatus(id string) (mailbox.SentStatus, error) {
+	var s mailbox.SentStatus
+	return s, c.do("GET", "/v1/sent/"+url.PathEscape(id), nil, &s)
+}
+
 func (c *Client) Outbox(all bool) ([]mailbox.OutItem, error) {
 	path := "/v1/outbox"
 	if all {

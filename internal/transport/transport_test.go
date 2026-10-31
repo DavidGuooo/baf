@@ -158,8 +158,8 @@ func inbox(t *testing.T, nd *node, agentName string) []mailbox.Item {
 }
 
 func echoWorker() agent.Adapter {
-	return agent.Func(func(_ context.Context, job agent.Job, onThread func(string)) agent.Outcome {
-		onThread("codex-thread")
+	return agent.Func(func(_ context.Context, job agent.Job, report agent.Report) agent.Outcome {
+		report.Thread("codex-thread")
 		return agent.Outcome{State: envelope.Completed, Text: "echo: " + job.Message.Body.Text, ThreadID: "codex-thread"}
 	})
 }
@@ -230,7 +230,7 @@ func TestSleepingReceiverGetsMessagesInOrderWhenItWakes(t *testing.T) {
 	n := newNet(t)
 	var mu sync.Mutex
 	var got []string
-	recorder := agent.Func(func(_ context.Context, job agent.Job, _ func(string)) agent.Outcome {
+	recorder := agent.Func(func(_ context.Context, job agent.Job, _ agent.Report) agent.Outcome {
 		mu.Lock()
 		got = append(got, job.Message.Body.Text)
 		mu.Unlock()
@@ -349,5 +349,85 @@ func TestPeerMayMessage(t *testing.T) {
 	}
 	if (tailnet.Peer{}).MayMessage("codex") {
 		t.Fatal("no grant must mean no access")
+	}
+}
+
+func status(t *testing.T, nd *node, id string) mailbox.SentStatus {
+	t.Helper()
+	s, err := nd.mb.SentStatus(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A Grok bot follows its request to Codex on the iMac: handed over, what
+// Codex is doing there, then the Result. Only the sending node may ask, and
+// only while the policy still lets it message Codex.
+func TestStatusAcrossNodes(t *testing.T) {
+	n := newNet(t)
+	release := make(chan struct{})
+	worker := agent.Func(func(ctx context.Context, job agent.Job, report agent.Report) agent.Outcome {
+		report.Thread("codex-thread")
+		report.Doing("running: go test ./...")
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return agent.Outcome{State: envelope.Completed, Text: "ok", ThreadID: "codex-thread"}
+	})
+	imac := n.add("imac", "100.64.0.1", nodeOpts{agents: map[string]agent.Adapter{"codex": worker}})
+	grok := n.add("grok", "100.64.0.2", nodeOpts{agents: map[string]agent.Adapter{"tokdev": nil}})
+	imac.callerIs("grok", tailnet.Grant{To: []string{"codex"}})
+	grok.callerIs("imac", tailnet.Grant{To: []string{"*"}})
+
+	r := grok.send(t, envelope.Envelope{Kind: envelope.Request, To: "imac/codex", FromAgent: "tokdev",
+		Body: envelope.Body{Text: "run the tests"}})
+	var s mailbox.SentStatus
+	waitFor(t, "codex to say what it is doing", func() bool {
+		s = status(t, grok, r.ID)
+		return s.Receiver != nil && s.Receiver.Run != nil && s.Receiver.Run.Doing != ""
+	})
+	if s.Handover == nil || s.Handover.State != "handed" || s.Handover.DoneAt == nil {
+		t.Fatalf("handover = %+v", s.Handover)
+	}
+	if p := s.Receiver; p.To != "imac/codex" || p.State != "running" || p.Run.Doing != "running: go test ./..." {
+		t.Fatalf("progress = %+v, run = %+v", p, p.Run)
+	}
+
+	imac.callerIs("mac2", tailnet.Grant{To: []string{"*"}})
+	if s := status(t, grok, r.ID); s.Receiver != nil || !strings.Contains(s.ReceiverError, "imac has no message") {
+		t.Fatalf("another node asking: %+v", s)
+	}
+	imac.callerIs("grok") // the grant was removed
+	if s := status(t, grok, r.ID); s.Receiver != nil || !strings.Contains(s.ReceiverError, "may no longer message imac/codex") {
+		t.Fatalf("without a grant: %+v", s)
+	}
+	imac.callerIs("grok", tailnet.Grant{To: []string{"codex"}})
+	imac.up.Store(false)
+	if s := status(t, grok, r.ID); s.Receiver != nil || !strings.Contains(s.ReceiverError, "host is down") {
+		t.Fatalf("imac asleep: %+v", s)
+	}
+	imac.up.Store(true)
+
+	close(release)
+	waitFor(t, "the result", func() bool { return status(t, grok, r.ID).Result != nil })
+	s = status(t, grok, r.ID)
+	if s.Result.State != "completed" || s.Receiver != nil || s.ReceiverError != "" {
+		t.Fatalf("once the Result is back, imac isn't asked: %+v", s)
+	}
+}
+
+func TestOlderReceiverCantReportProgress(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler()) // a baf from before /v1/progress
+	defer srv.Close()
+	ap := netip.MustParseAddrPort(srv.Listener.Addr().String())
+	c := &Client{
+		Lookup: func(context.Context, string) (netip.Addr, bool, error) { return ap.Addr(), true, nil },
+		Port:   int(ap.Port()),
+	}
+	_, err := c.Progress(context.Background(), "grokbot", "01X")
+	if err == nil || !strings.Contains(err.Error(), "grokbot runs an older baf") {
+		t.Fatalf("err = %v", err)
 	}
 }

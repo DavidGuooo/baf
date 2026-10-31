@@ -7,6 +7,7 @@
 //	baf request ADDR TEXT             send a request (a Result comes back)
 //	baf inbox [--all]                 list unread messages
 //	baf read ID                       show one message and mark it read
+//	baf status ID                     follow a message you sent: handed over, running, answered
 //	baf outbox [--all]                list messages waiting to go to other machines
 //	baf runs                          list recent agent runs
 //	baf wait ID...                    for routine runs: wait for mail to arrive
@@ -43,6 +44,7 @@ Usage:
   baf request ADDR TEXT...       send a request (a Result comes back automatically)
   baf inbox [--all]              list unread messages on this machine (--all: read ones too)
   baf read ID                    show one message and mark it read
+  baf status ID                  follow a message you sent: handed over, running (and doing what), answered
   baf outbox [--all]             messages waiting to go to other machines (--all: sent ones too)
   baf runs [--limit N]           list recent agent runs
   baf wait [--as NAME] ID...     wait until these messages have arrived (default --timeout 2m)
@@ -59,7 +61,7 @@ Options for send and request:
 
 Options for inbox, read and wait:
   --as NAME          only messages addressed to NAME (default $BAF_AGENT; none = every agent's)
-  --json             print JSON (inbox and read)
+  --json             print JSON (inbox, read, status, outbox and runs)
 `
 
 func main() {
@@ -86,6 +88,8 @@ func main() {
 		err = inbox(args)
 	case "read":
 		err = read(args)
+	case "status":
+		err = status(args)
 	case "outbox":
 		err = outbox(args)
 	case "runs":
@@ -176,11 +180,12 @@ func send(args []string, kind envelope.Kind) error {
 		note = " (sent earlier with the same id)"
 	}
 	if r.Queued {
-		fmt.Printf("%s %s queued for %s; it waits here until that machine stores it (see: baf outbox)%s\n",
+		fmt.Printf("%s %s queued for %s; it waits here until that machine stores it%s\n",
 			env.Kind, r.ID, to, note)
 	} else {
 		fmt.Printf("%s %s stored in %s's mailbox%s\n", env.Kind, r.ID, to, note)
 	}
+	fmt.Printf("follow it: baf status %s\n", r.ID)
 	return nil
 }
 
@@ -328,14 +333,14 @@ func runs(args []string) error {
 		return printJSON(list)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tAGENT\tSTATE\tTHREAD\tMESSAGE\tFROM\tSTARTED\tTOOK")
+	fmt.Fprintln(tw, "RUN\tAGENT\tSTATE\tTHREAD\tMESSAGE\tFROM\tSTARTED\tTOOK\tDOING (LAST)")
 	for _, r := range list {
 		took := "-"
 		if r.EndedAt != nil {
 			took = r.EndedAt.Sub(r.StartedAt).Round(time.Second).String()
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s %s\t%s\t%s\t%s\n", r.ID, r.Agent, r.State, r.ThreadID,
-			r.Kind, r.MessageID, r.From, r.StartedAt.Local().Format("Jan 2 15:04:05"), took)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s %s\t%s\t%s\t%s\t%s\n", r.ID, r.Agent, r.State, r.ThreadID,
+			r.Kind, r.MessageID, r.From, r.StartedAt.Local().Format("Jan 2 15:04:05"), took, firstLine(r.Doing, 50))
 	}
 	return tw.Flush()
 }

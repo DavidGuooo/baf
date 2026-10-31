@@ -20,9 +20,10 @@ type fakeAgent struct {
 	jobs    []agent.Job
 	threads int
 	reply   func(ctx context.Context, job agent.Job) agent.Outcome
+	doing   func(report agent.Report) // optional: what to report as the run starts
 }
 
-func (f *fakeAgent) Run(ctx context.Context, job agent.Job, onThread func(string)) agent.Outcome {
+func (f *fakeAgent) Run(ctx context.Context, job agent.Job, report agent.Report) agent.Outcome {
 	f.mu.Lock()
 	f.jobs = append(f.jobs, job)
 	thread := job.ResumeThread
@@ -30,8 +31,12 @@ func (f *fakeAgent) Run(ctx context.Context, job agent.Job, onThread func(string
 		f.threads++
 		thread = "t" + string(rune('0'+f.threads))
 	}
+	doing := f.doing
 	f.mu.Unlock()
-	onThread(thread)
+	report.Thread(thread)
+	if doing != nil {
+		doing(report)
+	}
 	out := agent.Outcome{State: envelope.Completed, Text: "done: " + job.Message.Body.Text}
 	if f.reply != nil {
 		out = f.reply(ctx, job)

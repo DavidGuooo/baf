@@ -117,12 +117,13 @@ type RunInfo struct {
 	From      string     `json:"from"`
 	StartedAt time.Time  `json:"started_at"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Doing     string     `json:"doing,omitempty"` // what the agent last started doing
 }
 
 // Runs lists the most recent runs, newest first.
 func (m *Mailbox) Runs(limit int) ([]RunInfo, error) {
 	rows, err := m.db.Query(`SELECT r.id, r.agent, r.thread_id, r.state, r.detail, m.id, m.kind,
-		m.sender_node || '/' || m.from_agent, r.started_at, r.ended_at
+		m.sender_node || '/' || m.from_agent, r.started_at, r.ended_at, r.doing
 		FROM runs r JOIN messages m ON m.seq = r.message_seq ORDER BY r.id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -136,15 +137,12 @@ func (m *Mailbox) Runs(limit int) ([]RunInfo, error) {
 			ended   sql.NullInt64
 		)
 		err := rows.Scan(&r.ID, &r.Agent, &r.ThreadID, &r.State, &r.Detail, &r.MessageID, &r.Kind,
-			&r.From, &started, &ended)
+			&r.From, &started, &ended, &r.Doing)
 		if err != nil {
 			return nil, err
 		}
 		r.StartedAt = time.UnixMilli(started)
-		if ended.Valid {
-			t := time.UnixMilli(ended.Int64)
-			r.EndedAt = &t
-		}
+		r.EndedAt = timePtr(ended)
 		out = append(out, r)
 	}
 	return out, rows.Err()
