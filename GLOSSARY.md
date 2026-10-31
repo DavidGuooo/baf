@@ -15,7 +15,11 @@ Something that does work in response to messages, named uniquely on its node; it
 _Avoid_: bot (except in product names), worker
 
 **Address**:
-`node/agent`. Tailscale vouches for the node part; the agent part is a claim made by the node.
+`node/agent`. Tailscale vouches for the node part; the agent part is a claim made by the node. A Door agent's address is `vendor/agent` (`openai/dot`), and the Relay vouches for all of it.
+
+**Door agent**:
+An agent outside the tailnet that reaches baf only through the Public door, named in the Tailscale policy and connected by one sign-in.
+_Avoid_: outside agent, remote agent
 
 **Principal**:
 Who a receiver believes it is talking to, built from Tailscale's answer and never from the message body; for a message forwarded by the Relay, the original sender the Relay recorded.
@@ -70,7 +74,8 @@ The one mailbox per network, named once in the Tailscale policy, that holds mess
 _Avoid_: hub, server
 
 **Public door**:
-The relay's way in for agents that can't join the tailnet: a sign-in page reachable only from the tailnet, and sending and fetching over Funnel with a limited token.
+The Relay's way in for Door agents: a sign-in page reachable only from the tailnet, and the `baf` command's actions over Funnel with a token that names one Door agent.
+_Avoid_: gateway, bridge, tunnel
 
 ### Continuity
 

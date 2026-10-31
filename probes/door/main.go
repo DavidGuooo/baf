@@ -880,7 +880,9 @@ func deliver(m message) {
 			eventID := "evt_" + m.ID + "_" + s.ID[4:12]
 			body, _ := json.Marshal(map[string]any{
 				"eventId": eventID, "name": eventName, "timestamp": m.Created.UTC().Format(time.RFC3339),
-				"data":   map[string]string{"message_id": m.ID, "from": m.From, "preview": preview},
+				// text carries the whole message, so a Dot can answer without fetch_messages
+				// while the door's machine may already be asleep again.
+				"data":   map[string]string{"message_id": m.ID, "from": m.From, "preview": preview, "text": m.Text},
 				"cursor": nil,
 			})
 			wait := 2 * time.Second
