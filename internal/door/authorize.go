@@ -20,15 +20,20 @@ type approval struct {
 var allowPage = template.Must(template.New("allow").Parse(`<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Allow a baf connector?</title>
-<style>body{font:16px system-ui;max-width:36rem;margin:3rem auto;padding:0 1rem;overflow-wrap:anywhere}dt{margin-top:1rem;color:#555}dd{margin-left:0}button,select{font:inherit;padding:.4rem}</style>
+<style>body{font:16px system-ui;max-width:36rem;margin:3rem auto;padding:0 1rem;overflow-wrap:anywhere}` +
+	`dt{margin-top:1rem;color:#555}dd{margin-left:0}button,select{font:inherit;padding:.4rem}</style>
 <h1>Allow {{.Agent}} to use baf?</h1>
 <dl><dt>Approving as</dt><dd>{{.Login}}</dd><dt>Client</dt><dd>{{.Client.Name}} ({{.Client.ID}})</dd>
 <dt>Returns to</dt><dd>{{.Redirect}}</dd></dl>
-{{if .Warn}}<p><strong>Warning:</strong> This client's identity or redirect does not match the Door agent's vendor. Allow only if you intended to connect this client.</p>{{end}}
+{{if .Warn}}<p><strong>Warning:</strong> This client's identity or redirect does not match ` +
+	`the Door agent's vendor. Allow only if you intended to connect this client.</p>{{end}}
 <p>What this Door agent may message is set in the Tailscale policy. Allow replaces its earlier connector.</p>
 <form method="post" action="/authorize"><input type="hidden" name="csrf" value="{{.CSRF}}">
-<label>Connector lasts <select name="days"><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">1 year</option></select></label>
-<p><button name="decision" value="allow">Allow</button> <button name="decision" value="deny">Deny</button></p></form></html>`))
+<label>Connector lasts <select name="days"><option value="7">7 days</option>` +
+	`<option value="30" selected>30 days</option><option value="90">90 days</option>` +
+	`<option value="365">1 year</option></select></label>
+<p><button name="decision" value="allow">Allow</button> ` +
+	`<button name="decision" value="deny">Deny</button></p></form></html>`))
 
 const csrfCookie = "__Host-baf-allow"
 
@@ -36,6 +41,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	peer, err := s.identity.WhoIs(ctx, r.RemoteAddr)
 	cancel()
+	// Only a person on the actual tailnet connection may approve a connector.
 	if err != nil || len(peer.Tags) > 0 || peer.Login == "" || peer.Login == "tagged-devices" {
 		http.Error(w, "approve from a person's device on the tailnet; tagged devices cannot Allow", 403)
 		return
@@ -58,7 +64,8 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 403)
 		return
 	}
-	if q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" || !validChallenge(q.Get("code_challenge")) {
+	if q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" ||
+		!validChallenge(q.Get("code_challenge")) {
 		http.Error(w, "need response_type=code and a valid S256 PKCE challenge", 400)
 		return
 	}
@@ -80,7 +87,14 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	csrf := randomToken()
-	a := approval{Grant: grant{Connector: Connector{Agent: name, ApprovedBy: peer.Login, ClientID: c.ID}, Resource: s.resource(name), Redirect: q.Get("redirect_uri"), Challenge: q.Get("code_challenge"), Scope: scope}, State: q.Get("state"), Node: peer.Node, Expires: s.now().Add(10 * time.Minute)}
+	a := approval{
+		Grant: grant{
+			Connector: Connector{Agent: name, ApprovedBy: peer.Login, ClientID: c.ID},
+			Resource:  s.resource(name), Redirect: q.Get("redirect_uri"),
+			Challenge: q.Get("code_challenge"), Scope: scope,
+		},
+		State: q.Get("state"), Node: peer.Node, Expires: s.now().Add(10 * time.Minute),
+	}
 	s.mu.Lock()
 	for key, p := range s.pending {
 		if !s.now().Before(p.Expires) {
@@ -96,9 +110,15 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many pending sign-ins; try again shortly", 429)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: csrf, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 600})
+	http.SetCookie(w, &http.Cookie{
+		Name: csrfCookie, Value: csrf, Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteStrictMode, MaxAge: 600,
+	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	allowPage.Execute(w, map[string]any{"Agent": name, "Login": peer.Login, "Client": c, "Redirect": a.Grant.Redirect, "Warn": !vendorMatches(name, c, a.Grant.Redirect), "CSRF": csrf})
+	allowPage.Execute(w, map[string]any{
+		"Agent": name, "Login": peer.Login, "Client": c, "Redirect": a.Grant.Redirect,
+		"Warn": !vendorMatches(name, c, a.Grant.Redirect), "CSRF": csrf,
+	})
 }
 
 func (s *Server) allow(w http.ResponseWriter, r *http.Request, login, node string) {
@@ -108,6 +128,7 @@ func (s *Server) allow(w http.ResponseWriter, r *http.Request, login, node strin
 	}
 	q := r.PostForm
 	csrf := q.Get("csrf")
+	// Bind this one-use approval to the browser as well as the person and device.
 	cookie, err := r.Cookie(csrfCookie)
 	if err != nil || csrf == "" || subtle.ConstantTimeCompare([]byte(csrf), []byte(cookie.Value)) != 1 {
 		http.Error(w, "invalid or missing Allow form guard; open the sign-in page again", 403)
@@ -126,7 +147,10 @@ func (s *Server) allow(w http.ResponseWriter, r *http.Request, login, node strin
 		http.Error(w, "sign-in expired or belongs to another device; open it again", 403)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{
+		Name: csrfCookie, Path: "/", Secure: true, HttpOnly: true,
+		SameSite: http.SameSiteStrictMode, MaxAge: -1,
+	})
 	if err := s.allowed(a.Grant.Agent); err != nil {
 		http.Error(w, err.Error(), 403)
 		return

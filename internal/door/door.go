@@ -18,38 +18,47 @@ import (
 	"time"
 
 	"github.com/DavidGuooo/baf/internal/envelope"
+	"github.com/DavidGuooo/baf/internal/mailbox"
 	"github.com/DavidGuooo/baf/internal/tailnet"
 )
 
 const maxRequest = 16 << 10
 
 // Policy is the mailbox's lookup of Door agents in this Relay's own grant.
-type Policy interface{ DoorAgents() ([]string, error) }
+type Policy interface {
+	DoorAgents() ([]string, error)
+}
 
 // Identity asks about the actual connection, never forwarded HTTP headers.
 type Identity interface {
 	WhoIs(context.Context, string) (tailnet.Peer, error)
 }
 
+// Options supplies storage, URLs and the current Tailscale lookups.
 type Options struct {
 	Path      string
 	PublicURL string
 	SigninURL string
 	Policy    Policy
 	Identity  Identity
+	Mailbox   *mailbox.Mailbox // required for MCP tools
 }
 
+// Server serves sign-in and authenticated access for Door agents.
 type Server struct {
 	db                   *sql.DB
 	publicURL, signinURL string
 	policy               Policy
 	identity             Identity
+	mailbox              *mailbox.Mailbox
+	writes               map[string][]time.Time
 	fetch                *http.Client
 	now                  func() time.Time
 	mu                   sync.Mutex
 	pending              map[string]approval
 }
 
+// Open opens the connector store without starting any listeners.
 func Open(o Options) (*Server, error) {
 	if o.Policy == nil || o.Identity == nil {
 		return nil, errors.New("door needs policy and Tailscale identity lookups")
@@ -61,16 +70,25 @@ func Open(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{db: db, publicURL: strings.TrimRight(o.PublicURL, "/"), signinURL: strings.TrimRight(o.SigninURL, "/"),
-		policy: o.Policy, identity: o.Identity, fetch: metadataClient(), now: time.Now, pending: map[string]approval{}}, nil
+	return &Server{
+		db:        db,
+		publicURL: strings.TrimRight(o.PublicURL, "/"), signinURL: strings.TrimRight(o.SigninURL, "/"),
+		policy: o.Policy, identity: o.Identity, mailbox: o.Mailbox,
+		writes: map[string][]time.Time{},
+		fetch:  metadataClient(), now: time.Now, pending: map[string]approval{},
+	}, nil
 }
 
+// Close closes the connector store and idle metadata connections.
 func (s *Server) Close() error {
 	s.fetch.CloseIdleConnections()
 	return s.db.Close()
 }
 
-func validAgent(name string) bool { _, err := envelope.ParseAddress(name); return err == nil }
+func validAgent(name string) bool {
+	_, err := envelope.ParseAddress(name)
+	return err == nil
+}
 
 func (s *Server) allowed(name string) error {
 	names, err := s.policy.DoorAgents()
@@ -131,12 +149,16 @@ func (s *Server) PublicHandler() http.Handler {
 				if !limitRequest(w, r) {
 					return
 				}
-				writeJSON(w, 200, map[string]any{"resource": s.resource(name), "authorization_servers": []string{s.publicURL}, "scopes_supported": []string{"baf"}, "bearer_methods_supported": []string{"header"}, "resource_name": "baf: " + name})
+				writeJSON(w, 200, map[string]any{
+					"resource": s.resource(name), "authorization_servers": []string{s.publicURL},
+					"scopes_supported": []string{"baf"}, "bearer_methods_supported": []string{"header"},
+					"resource_name": "baf: " + name,
+				})
 				return
 			}
 		}
 		if name, ok := agentPath(path); ok && (r.Method == "POST" || r.Method == "GET" || r.Method == "DELETE") {
-			if !limitRequest(w, r) {
+			if !limitBody(w, r, maxMCPRequest) {
 				return
 			}
 			auth := strings.Fields(r.Header.Get("Authorization"))
@@ -146,7 +168,8 @@ func (s *Server) PublicHandler() http.Handler {
 					return
 				}
 			}
-			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s/.well-known/oauth-protected-resource/door/%s/mcp"`, s.publicURL, name))
+			metadata := s.publicURL + "/.well-known/oauth-protected-resource/door/" + name + "/mcp"
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata="%s"`, metadata))
 			oauthError(w, 401, "invalid_token")
 			return
 		}
@@ -154,12 +177,7 @@ func (s *Server) PublicHandler() http.Handler {
 	})
 }
 
-// mcp is the authenticated handoff for job 3. principal comes only from the
-// token and the current policy; no MCP tools or forwarding exist yet.
-func (s *Server) mcp(w http.ResponseWriter, r *http.Request, principal string) {
-	http.Error(w, "baf Public door: MCP tools are not implemented yet", http.StatusNotImplemented)
-}
-
+// SigninHandler serves the Allow page on the tailnet-only listener.
 func (s *Server) SigninHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.EscapedPath() != "/authorize" || (r.Method != "GET" && r.Method != "POST") {
@@ -172,17 +190,21 @@ func (s *Server) SigninHandler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; "+
+			"form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 		s.authorize(w, r)
 	})
 }
 
 func (s *Server) authServer(w http.ResponseWriter) {
 	writeJSON(w, 200, map[string]any{
-		"issuer": s.publicURL, "authorization_endpoint": s.signinURL + "/authorize", "token_endpoint": s.publicURL + "/token", "registration_endpoint": s.publicURL + "/register",
+		"issuer": s.publicURL, "authorization_endpoint": s.signinURL + "/authorize",
+		"token_endpoint": s.publicURL + "/token", "registration_endpoint": s.publicURL + "/register",
 		"authorization_response_iss_parameter_supported": true, "client_id_metadata_document_supported": true,
-		"token_endpoint_auth_methods_supported": []string{"none"}, "code_challenge_methods_supported": []string{"S256"},
-		"grant_types_supported": []string{"authorization_code", "refresh_token"}, "response_types_supported": []string{"code"}, "scopes_supported": []string{"baf"},
+		"token_endpoint_auth_methods_supported": []string{"none"},
+		"code_challenge_methods_supported":      []string{"S256"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"response_types_supported":              []string{"code"}, "scopes_supported": []string{"baf"},
 	})
 }
 
@@ -241,11 +263,15 @@ func singleValues(q url.Values) bool {
 }
 
 func limitRequest(w http.ResponseWriter, r *http.Request) bool {
-	if len(r.RequestURI) > maxRequest || r.ContentLength > maxRequest {
+	return limitBody(w, r, maxRequest)
+}
+
+func limitBody(w http.ResponseWriter, r *http.Request, limit int64) bool {
+	if len(r.RequestURI) > maxRequest || r.ContentLength > limit {
 		w.WriteHeader(413)
 		return false
 	}
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequest))
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
 		w.WriteHeader(413)
 		return false

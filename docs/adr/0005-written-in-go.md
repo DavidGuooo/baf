@@ -6,5 +6,5 @@ baf (the mailbox daemon, the relay role and the `baf` command agents call) is wr
 
 - Releases are one binary per platform (macOS arm64/amd64, Linux amd64/arm64).
 - Identity and permissions come from Tailscale's Go client, not from calling the `tailscale` command.
-- The public door uses the official Go MCP SDK. Whether it supports MCP events (still a draft spec) is checked when the door is built.
+- The Public door uses standard-library HTTP and JSON, porting the MCP discovery and tool shapes accepted in the door probe. This replaces the earlier plan to use the official Go MCP SDK; the small current surface needs no new dependency. Events are a later job.
 - The owner hasn't used Go in other projects. The code should stay plain and well commented.

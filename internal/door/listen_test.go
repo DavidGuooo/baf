@@ -20,14 +20,20 @@ func TestListenersUseSeparateRoutesAndCertificate(t *testing.T) {
 	defer fixture.Close()
 	certificate := fixture.TLS.Certificates[0]
 	var calls atomic.Int32
-	ls, err := h.s.Listen([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, 0, "127.0.0.1:0", func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) { calls.Add(1); return &certificate, nil })
+	ls, err := h.s.Listen([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, 0, "127.0.0.1:0",
+		func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			calls.Add(1)
+			return &certificate, nil
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ls.Close()
 	roots := x509.NewCertPool()
 	roots.AddCert(fixture.Certificate())
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com"}}}
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "example.com"},
+	}}
 	defer client.CloseIdleConnections()
 	for _, tc := range []struct {
 		client *http.Client
@@ -78,7 +84,8 @@ func TestListenerFailureClosesEarlierBinds(t *testing.T) {
 	}
 	publicAddr := available.Addr().String()
 	available.Close()
-	_, err = h.s.Listen([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, signinPort, publicAddr, func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil })
+	_, err = h.s.Listen([]netip.Addr{netip.MustParseAddr("127.0.0.1")}, signinPort, publicAddr,
+		func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return nil, nil })
 	if err == nil {
 		t.Fatal("expected sign-in bind failure")
 	}

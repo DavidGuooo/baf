@@ -43,7 +43,10 @@ func metadataClient() *http.Client {
 				}
 				return nil
 			},
-		}).DialContext, TLSHandshakeTimeout: 5 * time.Second, MaxResponseHeaderBytes: 16 << 10, IdleConnTimeout: 30 * time.Second},
+		}).DialContext,
+			TLSHandshakeTimeout: 5 * time.Second, MaxResponseHeaderBytes: 16 << 10,
+			IdleConnTimeout: 30 * time.Second,
+		},
 	}
 }
 
@@ -90,7 +93,8 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`DELETE FROM clients WHERE created_at < ? AND id NOT IN (SELECT client_id FROM connectors)`, s.now().Add(-30*24*time.Hour).Unix())
+	_, err = tx.Exec(`DELETE FROM clients WHERE created_at < ?
+ AND id NOT IN (SELECT client_id FROM connectors)`, s.now().Add(-30*24*time.Hour).Unix())
 	if err != nil {
 		oauthError(w, 500, "server_error")
 		return

@@ -10,7 +10,10 @@ import (
 )
 
 func TestMetadataCannotReachPrivateAddresses(t *testing.T) {
-	for _, raw := range []string{"127.0.0.1", "::1", "::ffff:127.0.0.1", "100.64.0.1", "10.0.0.1", "192.168.1.1", "169.254.169.254", "fd7a:115c:a1e0::1", "0.0.0.0", "224.0.0.1"} {
+	for _, raw := range []string{
+		"127.0.0.1", "::1", "::ffff:127.0.0.1", "100.64.0.1", "10.0.0.1", "192.168.1.1",
+		"169.254.169.254", "fd7a:115c:a1e0::1", "0.0.0.0", "224.0.0.1",
+	} {
 		if publicIP(netip.MustParseAddr(raw)) {
 			t.Errorf("accepted %s", raw)
 		}
@@ -20,7 +23,10 @@ func TestMetadataCannotReachPrivateAddresses(t *testing.T) {
 	}
 	h := newHarness(t)
 	h.s.fetch = metadataClient()
-	for _, id := range []string{"https://127.0.0.1/client.json", "https://100.64.0.1/client.json", "https://[::1]/client.json", "http://chatgpt.com/client.json", "https://chatgpt.com:8444/client.json"} {
+	for _, id := range []string{
+		"https://127.0.0.1/client.json", "https://100.64.0.1/client.json", "https://[::1]/client.json",
+		"http://chatgpt.com/client.json", "https://chatgpt.com:8444/client.json",
+	} {
 		if _, err := h.s.lookupClient(context.Background(), id); err == nil {
 			t.Fatalf("accepted %s", id)
 		}

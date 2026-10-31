@@ -45,11 +45,11 @@ func (f *fakeIdentity) WhoIs(_ context.Context, addr string) (tailnet.Peer, erro
 func (f *fakeIdentity) SelfPeer(context.Context) (tailnet.Peer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	doors := map[string][]string{"openai/dot": {"me"}, "openai/other": {"me"}}
+	doors := map[string][]string{"openai/dot": {"me", "codex"}, "openai/other": {"me"}}
 	if f.removed {
 		delete(doors, "openai/dot")
 	}
-	return tailnet.Peer{Grants: []tailnet.Grant{{Relay: true, Door: doors}}}, nil
+	return tailnet.Peer{Grants: []tailnet.Grant{{Relay: true, To: []string{"*"}, Door: doors}}}, nil
 }
 
 type roundTripper func(*http.Request) (*http.Response, error)
@@ -59,6 +59,7 @@ func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { retur
 type harness struct {
 	t              *testing.T
 	s              *Server
+	mailbox        *mailbox.Mailbox
 	public, signin *httptest.Server
 	browser        *http.Client
 	identity       *fakeIdentity
@@ -70,15 +71,21 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	f := &fakeIdentity{login: "owner@example.com"}
 	home := t.TempDir()
-	mb, err := mailbox.Open(mailbox.Options{Path: filepath.Join(home, "mailbox.db"), Node: "relay", Agents: map[string]agent.Adapter{"me": nil}, Door: f})
+	mb, err := mailbox.Open(mailbox.Options{
+		Path: filepath.Join(home, "mailbox.db"), Node: "relay",
+		Agents: map[string]agent.Adapter{"me": nil, "codex": nil, "claude": nil}, Door: f,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { mb.Close() })
-	h := &harness{t: t, identity: f, path: filepath.Join(home, "door.db")}
+	h := &harness{t: t, mailbox: mb, identity: f, path: filepath.Join(home, "door.db")}
 	h.public = httptest.NewUnstartedServer(nil)
 	h.signin = httptest.NewUnstartedServer(nil)
-	s, err := Open(Options{Path: h.path, PublicURL: "https://" + h.public.Listener.Addr().String(), SigninURL: "https://" + h.signin.Listener.Addr().String(), Policy: mb, Identity: f})
+	s, err := Open(Options{
+		Path: h.path, PublicURL: "https://" + h.public.Listener.Addr().String(),
+		SigninURL: "https://" + h.signin.Listener.Addr().String(), Policy: mb, Identity: f, Mailbox: mb,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +115,9 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-func (h *harness) request(c *http.Client, method, target, body string, headers map[string]string) (*http.Response, string) {
+func (h *harness) request(c *http.Client, method, target, body string,
+	headers map[string]string,
+) (*http.Response, string) {
 	h.t.Helper()
 	req, err := http.NewRequest(method, target, strings.NewReader(body))
 	if err != nil {
@@ -130,7 +139,11 @@ func (h *harness) request(c *http.Client, method, target, body string, headers m
 }
 
 func (h *harness) query(name string) url.Values {
-	return url.Values{"client_id": {clientID}, "redirect_uri": {redirectURI}, "response_type": {"code"}, "code_challenge_method": {"S256"}, "code_challenge": {challenge(verifier)}, "resource": {h.s.resource(name)}, "scope": {"baf"}, "state": {"keep-this-state"}}
+	return url.Values{
+		"client_id": {clientID}, "redirect_uri": {redirectURI}, "response_type": {"code"},
+		"code_challenge_method": {"S256"}, "code_challenge": {challenge(verifier)},
+		"resource": {h.s.resource(name)}, "scope": {"baf"}, "state": {"keep-this-state"},
+	}
 }
 
 func (h *harness) page(q url.Values) (int, string, string) {
@@ -146,7 +159,9 @@ func (h *harness) page(q url.Values) (int, string, string) {
 
 func (h *harness) allow(csrf string, days string) (*http.Response, string) {
 	h.t.Helper()
-	return h.request(h.browser, "POST", h.signin.URL+"/authorize", url.Values{"csrf": {csrf}, "days": {days}, "decision": {"allow"}}.Encode(), map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+	form := url.Values{"csrf": {csrf}, "days": {days}, "decision": {"allow"}}
+	return h.request(h.browser, "POST", h.signin.URL+"/authorize", form.Encode(),
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
 }
 
 func (h *harness) code(name string) string {
@@ -174,7 +189,10 @@ func (h *harness) code(name string) string {
 }
 
 func codeForm(code string) url.Values {
-	return url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "redirect_uri": {redirectURI}, "code": {code}, "code_verifier": {verifier}}
+	return url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {clientID}, "redirect_uri": {redirectURI},
+		"code": {code}, "code_verifier": {verifier},
+	}
 }
 func refreshForm(tok tokens) url.Values {
 	return url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {tok.Refresh}}
@@ -182,7 +200,8 @@ func refreshForm(tok tokens) url.Values {
 
 func (h *harness) token(q url.Values, want int) tokens {
 	h.t.Helper()
-	resp, body := h.request(h.public.Client(), "POST", h.public.URL+"/token", q.Encode(), map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+	resp, body := h.request(h.public.Client(), "POST", h.public.URL+"/token", q.Encode(),
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
 	if resp.StatusCode != want {
 		h.t.Fatalf("token status %d want %d: %s", resp.StatusCode, want, body)
 	}
@@ -203,11 +222,13 @@ func (h *harness) token(q url.Values, want int) tokens {
 
 func (h *harness) bearer(name, token string, want int) {
 	h.t.Helper()
-	resp, body := h.request(h.public.Client(), "POST", h.public.URL+"/door/"+name+"/mcp", "", map[string]string{"Authorization": "Bearer " + token})
+	resp, body := h.request(h.public.Client(), "POST", h.public.URL+"/door/"+name+"/mcp",
+		`{"jsonrpc":"2.0","id":1,"method":"ping"}`, map[string]string{"Authorization": "Bearer " + token})
 	if resp.StatusCode != want {
 		h.t.Fatalf("MCP %s: %d want %d: %s", name, resp.StatusCode, want, body)
 	}
-	if want == 401 && !strings.Contains(resp.Header.Get("WWW-Authenticate"), `resource_metadata="`+h.s.publicURL+"/.well-known/oauth-protected-resource/door/"+name+"/mcp\"") {
+	metadata := h.s.publicURL + "/.well-known/oauth-protected-resource/door/" + name + "/mcp"
+	if want == 401 && !strings.Contains(resp.Header.Get("WWW-Authenticate"), `resource_metadata="`+metadata+`"`) {
 		h.t.Fatalf("bad challenge: %s", resp.Header.Get("WWW-Authenticate"))
 	}
 }
@@ -227,7 +248,7 @@ func TestOAuthRoundTrip(t *testing.T) {
 	q := codeForm(code)
 	q.Set("resource", h.s.resource("openai/dot"))
 	tok := h.token(q, 200)
-	h.bearer("openai/dot", tok.Access, 501)
+	h.bearer("openai/dot", tok.Access, 200)
 	h.bearer("openai/other", tok.Access, 401)
 	h.token(q, 400)
 	next := h.token(refreshForm(tok), 200)
@@ -235,10 +256,11 @@ func TestOAuthRoundTrip(t *testing.T) {
 		t.Fatal("tokens did not rotate")
 	}
 	h.token(refreshForm(tok), 400)
-	h.bearer("openai/dot", tok.Access, 501) // access stays valid for its original day
-	h.bearer("openai/dot", next.Access, 501)
+	h.bearer("openai/dot", tok.Access, 200) // access stays valid for its original day
+	h.bearer("openai/dot", next.Access, 200)
 	list, err := h.s.List()
-	if err != nil || len(list) != 2 || !list[0].Connected || list[0].ApprovedBy != "owner@example.com" || list[0].ClientID != clientID || list[1].Connected {
+	if err != nil || len(list) != 2 || !list[0].Connected || list[0].ApprovedBy != "owner@example.com" ||
+		list[0].ClientID != clientID || list[1].Connected {
 		t.Fatalf("list=%+v err=%v", list, err)
 	}
 	// No raw token or code is stored, including in SQLite's journal.
@@ -271,13 +293,21 @@ func TestAuthorizeRefusals(t *testing.T) {
 		change func(*harness, url.Values)
 		want   int
 	}{
-		{"tagged", func(h *harness, q url.Values) { h.identity.mu.Lock(); h.identity.tagged = true; h.identity.mu.Unlock() }, 403},
+		{"tagged", func(h *harness, q url.Values) {
+			h.identity.mu.Lock()
+			h.identity.tagged = true
+			h.identity.mu.Unlock()
+		}, 403},
 		{"unlisted", func(h *harness, q url.Values) { q.Set("resource", h.s.resource("openai/missing")) }, 403},
 		{"missing PKCE", func(h *harness, q url.Values) { q.Del("code_challenge") }, 400},
 		{"plain PKCE", func(h *harness, q url.Values) { q.Set("code_challenge_method", "plain") }, 400},
 		{"bad PKCE", func(h *harness, q url.Values) { q.Set("code_challenge", "short") }, 400},
-		{"foreign resource", func(h *harness, q url.Values) { q.Set("resource", "https://elsewhere/door/openai/dot/mcp") }, 400},
-		{"wrong redirect", func(h *harness, q url.Values) { q.Set("redirect_uri", "https://attacker.example/callback") }, 400},
+		{"foreign resource", func(h *harness, q url.Values) {
+			q.Set("resource", "https://elsewhere/door/openai/dot/mcp")
+		}, 400},
+		{"wrong redirect", func(h *harness, q url.Values) {
+			q.Set("redirect_uri", "https://attacker.example/callback")
+		}, 400},
 		{"duplicate parameter", func(h *harness, q url.Values) { q.Add("resource", h.s.resource("openai/other")) }, 400},
 	}
 	for _, tc := range cases {
@@ -342,7 +372,7 @@ func TestExpiredRevokedReplacedAndRemoved(t *testing.T) {
 			}
 			next := h.token(refreshForm(tok), want)
 			if want == 200 {
-				h.bearer("openai/dot", next.Access, 501)
+				h.bearer("openai/dot", next.Access, 200)
 			}
 		})
 	}
@@ -373,7 +403,9 @@ func TestPendingCodes(t *testing.T) {
 }
 
 func TestAllowGuard(t *testing.T) {
-	for _, kind := range []string{"missing", "cookie missing", "wrong person", "tagged on POST", "expired", "replayed", "policy changed"} {
+	for _, kind := range []string{
+		"missing", "cookie missing", "wrong person", "tagged on POST", "expired", "replayed", "policy changed",
+	} {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
 			_, csrf, _ := h.page(h.query("openai/dot"))
@@ -412,14 +444,21 @@ func TestAllowGuard(t *testing.T) {
 
 func TestPublicRoutesAndLimits(t *testing.T) {
 	h := newHarness(t)
-	for _, path := range []string{"/", "/.env", "/authorize", "/.well-known/openid-configuration", "/token/", "/door/openai/dot/mcp/", "//door/openai/dot/mcp", "/door/openai/dot/../dot/mcp", "/door/openai%2Fdot/mcp"} {
+	for _, path := range []string{
+		"/", "/.env", "/authorize", "/.well-known/openid-configuration", "/token/", "/door/openai/dot/mcp/",
+		"//door/openai/dot/mcp", "/door/openai/dot/../dot/mcp", "/door/openai%2Fdot/mcp",
+	} {
 		resp, body := h.request(h.public.Client(), "GET", h.public.URL+path, "", nil)
 		if resp.StatusCode != 404 || body != "" || resp.Header.Get("Location") != "" {
 			t.Fatalf("%s: %d %q", path, resp.StatusCode, body)
 		}
 	}
 	for _, path := range []string{"/token", "/register", "/door/openai/dot/mcp"} {
-		resp, _ := h.request(h.public.Client(), "POST", h.public.URL+path, strings.Repeat("x", maxRequest+1), nil)
+		limit := maxRequest
+		if strings.HasSuffix(path, "/mcp") {
+			limit = maxMCPRequest
+		}
+		resp, _ := h.request(h.public.Client(), "POST", h.public.URL+path, strings.Repeat("x", limit+1), nil)
 		if resp.StatusCode != 413 {
 			t.Fatalf("%s: %d", path, resp.StatusCode)
 		}
@@ -432,7 +471,9 @@ func TestPublicRoutesAndLimits(t *testing.T) {
 
 func TestDynamicRegistrationAndVendorWarning(t *testing.T) {
 	h := newHarness(t)
-	resp, body := h.request(h.public.Client(), "POST", h.public.URL+"/register", `{"client_name":"Other client","redirect_uris":["https://other.example/callback"]}`, map[string]string{"Content-Type": "application/json"})
+	resp, body := h.request(h.public.Client(), "POST", h.public.URL+"/register",
+		`{"client_name":"Other client","redirect_uris":["https://other.example/callback"]}`,
+		map[string]string{"Content-Type": "application/json"})
 	if resp.StatusCode != 201 {
 		t.Fatalf("%d %s", resp.StatusCode, body)
 	}
@@ -456,7 +497,7 @@ func TestDynamicRegistrationAndVendorWarning(t *testing.T) {
 	form.Set("client_id", c.ID)
 	form.Set("redirect_uri", c.Redirects[0])
 	tok := h.token(form, 200)
-	h.bearer("openai/dot", tok.Access, 501)
+	h.bearer("openai/dot", tok.Access, 200)
 	h.clock.Add(7 * 86400)
 	h.bearer("openai/dot", tok.Access, 401)
 }
@@ -465,7 +506,10 @@ func TestRestartKeepsConnector(t *testing.T) {
 	h := newHarness(t)
 	tok := h.token(codeForm(h.code("openai/dot")), 200)
 	// Use another instance to read the durable state, without changing handlers.
-	other, err := Open(Options{Path: h.path, PublicURL: h.s.publicURL, SigninURL: h.s.signinURL, Policy: h.s.policy, Identity: h.identity})
+	other, err := Open(Options{
+		Path: h.path, PublicURL: h.s.publicURL, SigninURL: h.s.signinURL,
+		Policy: h.s.policy, Identity: h.identity,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -509,7 +553,7 @@ func TestRefreshKeepsChosenLimit(t *testing.T) {
 	if tok.ExpiresIn != 3600 {
 		t.Fatalf("last access lifetime = %d, want 3600", tok.ExpiresIn)
 	}
-	h.bearer("openai/dot", tok.Access, 501)
+	h.bearer("openai/dot", tok.Access, 200)
 	h.clock.Add(3600)
 	h.bearer("openai/dot", tok.Access, 401)
 	h.token(refreshForm(tok), 400)

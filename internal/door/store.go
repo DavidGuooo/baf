@@ -78,7 +78,9 @@ func openDB(path string) (*sql.DB, error) {
 	if err = f.Close(); err != nil {
 		return nil, err
 	}
-	q := url.Values{"_pragma": {"journal_mode(WAL)", "busy_timeout(5000)", "synchronous(FULL)", "foreign_keys(1)"}}
+	q := url.Values{
+		"_pragma": {"journal_mode(WAL)", "busy_timeout(5000)", "synchronous(FULL)", "foreign_keys(1)"},
+	}
 	u := url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}
 	db, err := sql.Open("sqlite", u.String())
 	if err != nil {
@@ -111,7 +113,8 @@ func (s *Server) approve(g grant) (string, error) {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO connectors
  (agent,approved_by,approved_at,client_id,expires_at,resource,redirect,challenge,scope,code_hash,code_expires)
  VALUES (?,?,?,?,?,?,?,?,?,?,?)`, g.Agent, g.ApprovedBy, g.ApprovedAt.Unix(), g.ClientID,
-		g.ExpiresAt.Unix(), g.Resource, g.Redirect, g.Challenge, g.Scope, hash(code), s.now().Add(5*time.Minute).Unix())
+		g.ExpiresAt.Unix(), g.Resource, g.Redirect, g.Challenge, g.Scope,
+		hash(code), s.now().Add(5*time.Minute).Unix())
 	return code, err
 }
 
@@ -134,7 +137,8 @@ func (s *Server) exchange(form url.Values) (tokens, error) {
 	var g grant
 	var expires, codeExpires int64
 	err = tx.QueryRow(`SELECT agent,client_id,expires_at,resource,redirect,challenge,scope,code_expires
- FROM connectors WHERE `+column+`=?`, hash(raw)).Scan(&g.Agent, &g.ClientID, &expires, &g.Resource, &g.Redirect, &g.Challenge, &g.Scope, &codeExpires)
+ FROM connectors WHERE `+column+`=?`, hash(raw)).Scan(
+		&g.Agent, &g.ClientID, &expires, &g.Resource, &g.Redirect, &g.Challenge, &g.Scope, &codeExpires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tokens{}, errGrant
 	}
@@ -142,6 +146,7 @@ func (s *Server) exchange(form url.Values) (tokens, error) {
 		return tokens{}, err
 	}
 	now := s.now()
+	// A code or refresh token is valid only for its approved client and resource.
 	if now.Unix() >= expires || form.Get("client_id") != g.ClientID ||
 		(form.Get("resource") != "" && form.Get("resource") != g.Resource) {
 		return tokens{}, errGrant
@@ -154,8 +159,12 @@ func (s *Server) exchange(form url.Values) (tokens, error) {
 		return tokens{}, errGrant
 	}
 	until := min(now.Add(24*time.Hour).Unix(), expires)
-	out := tokens{Access: randomToken(), Refresh: randomToken(), Type: "Bearer", ExpiresIn: until - now.Unix(), Scope: g.Scope}
-	_, err = tx.Exec(`UPDATE connectors SET code_hash=NULL, refresh_hash=? WHERE agent=?`, hash(out.Refresh), g.Agent)
+	out := tokens{
+		Access: randomToken(), Refresh: randomToken(), Type: "Bearer",
+		ExpiresIn: until - now.Unix(), Scope: g.Scope,
+	}
+	_, err = tx.Exec(`UPDATE connectors SET code_hash=NULL, refresh_hash=? WHERE agent=?`,
+		hash(out.Refresh), g.Agent)
 	if err != nil {
 		return tokens{}, err
 	}
@@ -174,11 +183,13 @@ func (s *Server) exchange(form url.Values) (tokens, error) {
 }
 
 // Authenticate binds a bearer token to exactly one Door agent and resource.
-// Job 3 can use the returned name as its Principal, never a request-body name.
+// Use the returned name as the Principal, never a request-body name.
 func (s *Server) Authenticate(token, resource string) (string, error) {
 	var name string
 	var expires, accessExpires int64
-	err := s.db.QueryRow(`SELECT c.agent,c.expires_at,a.expires_at FROM access_tokens a JOIN connectors c ON a.agent=c.agent WHERE a.hash=? AND c.resource=?`, hash(token), resource).Scan(&name, &expires, &accessExpires)
+	err := s.db.QueryRow(`SELECT c.agent,c.expires_at,a.expires_at
+ FROM access_tokens a JOIN connectors c ON a.agent=c.agent
+ WHERE a.hash=? AND c.resource=?`, hash(token), resource).Scan(&name, &expires, &accessExpires)
 	if err != nil {
 		return "", errGrant
 	}
@@ -202,7 +213,8 @@ func (s *Server) List() ([]Connector, error) {
 		c := Connector{Agent: name}
 		var approved, expires int64
 		var active bool
-		err := s.db.QueryRow(`SELECT approved_by,approved_at,client_id,expires_at,refresh_hash IS NOT NULL FROM connectors WHERE agent=?`, name).Scan(&c.ApprovedBy, &approved, &c.ClientID, &expires, &active)
+		err := s.db.QueryRow(`SELECT approved_by,approved_at,client_id,expires_at,refresh_hash IS NOT NULL
+ FROM connectors WHERE agent=?`, name).Scan(&c.ApprovedBy, &approved, &c.ClientID, &expires, &active)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}

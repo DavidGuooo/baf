@@ -118,7 +118,10 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 	var doorListeners *door.Listeners
 	if cfg.Door.Enabled {
 		signinURL := "https://" + net.JoinHostPort(self.DNSName, strconv.Itoa(cfg.Door.SigninPort))
-		publicDoor, err = door.Open(door.Options{Path: filepath.Join(home, "door.db"), PublicURL: cfg.Door.PublicURL, SigninURL: signinURL, Policy: mb, Identity: ts})
+		publicDoor, err = door.Open(door.Options{
+			Path: filepath.Join(home, "door.db"), PublicURL: cfg.Door.PublicURL, SigninURL: signinURL,
+			Policy: mb, Identity: ts, Mailbox: mb,
+		})
 		if err != nil {
 			return fmt.Errorf("opening Public door: %w", err)
 		}
