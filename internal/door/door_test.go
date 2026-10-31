@@ -637,3 +637,23 @@ func TestConnectorStates(t *testing.T) {
 	}
 	check("waiting for the app")
 }
+
+// Browsers apply form-action to the redirect after Allow, so the page must
+// allow the client's redirect origin or the owner is left on the page.
+func TestAllowPageLetsTheRedirectThrough(t *testing.T) {
+	h := newHarness(t)
+	resp, _ := h.request(h.browser, "GET", h.signin.URL+"/authorize?"+h.query("openai/dot").Encode(), "", nil)
+	u, _ := url.Parse(redirectURI)
+	want := "form-action 'self' https://" + u.Host + ";"
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, want) {
+		t.Fatalf("CSP %q lacks %q", csp, want)
+	}
+}
+
+func TestFormActionRefusesOddHosts(t *testing.T) {
+	for _, redirect := range []string{"https://a.example; script-src *", "http://chatgpt.com/x", "::"} {
+		if got := formAction(redirect); got != "'self'" {
+			t.Errorf("formAction(%q) = %q, want 'self'", redirect, got)
+		}
+	}
+}

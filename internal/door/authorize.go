@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"time"
 )
@@ -128,6 +129,9 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		Name: csrfCookie, Value: csrf, Path: "/", Secure: true, HttpOnly: true,
 		SameSite: http.SameSiteStrictMode, MaxAge: 600,
 	})
+	// Allow answers with a redirect to the client. Browsers apply form-action
+	// to that redirect too, so 'self' alone would leave the owner stuck here.
+	w.Header().Set("Content-Security-Policy", signinCSP(formAction(a.Grant.Redirect)))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	reason = ""
 	slog.Info("door Allow page shown", "agent", name, "approver", peer.Login, "client_id", logURL(c.ID))
@@ -207,4 +211,23 @@ func (s *Server) allow(w http.ResponseWriter, r *http.Request, login, node strin
 	}
 	back.RawQuery = values.Encode()
 	http.Redirect(w, r, back.String(), http.StatusFound)
+}
+
+// signinCSP is the Allow page's Content-Security-Policy: no scripts, no
+// frames, and the form may go only to formAction.
+func signinCSP(formAction string) string {
+	return "default-src 'none'; style-src 'unsafe-inline'; form-action " + formAction +
+		"; frame-ancestors 'none'; base-uri 'none'"
+}
+
+var cspHost = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]+)?$`)
+
+// formAction allows the form to post here and to be redirected to the
+// client's redirect origin (https://chatgpt.com for ChatGPT).
+func formAction(redirect string) string {
+	u, err := url.Parse(redirect)
+	if err != nil || u.Scheme != "https" || !cspHost.MatchString(u.Host) {
+		return "'self'"
+	}
+	return "'self' https://" + u.Host
 }
