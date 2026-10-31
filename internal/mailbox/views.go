@@ -60,9 +60,18 @@ func (m *Mailbox) Read(agentName, id string) (Item, error) {
 		seq     int64
 		toAgent string
 	)
-	err := m.db.QueryRow(`SELECT seq, to_agent FROM messages WHERE id = ? ORDER BY seq LIMIT 1`, id).Scan(&seq, &toAgent)
+	err := m.db.QueryRow(`SELECT seq, to_agent FROM messages WHERE id = ? AND (? = '' OR to_agent = ?)
+		ORDER BY seq LIMIT 1`, id, agentName, agentName).Scan(&seq, &toAgent)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Item{}, ErrNotFound
+		// Keep the helpful local error without selecting another agent's
+		// message ahead of ours when two senders chose the same id.
+		err = m.db.QueryRow(`SELECT to_agent FROM messages WHERE id = ? LIMIT 1`, id).Scan(&toAgent)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Item{}, ErrNotFound
+		}
+		if err == nil {
+			return Item{}, fmt.Errorf("%w: %s is for %s, not %s", ErrNotForYou, id, toAgent, agentName)
+		}
 	}
 	if err != nil {
 		return Item{}, err

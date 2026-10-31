@@ -101,6 +101,31 @@ agent's own auto mode, so nothing waits for a permission prompt: Codex with
 Other settings: `"port"` (default 7780, the same on every machine), `"give_up_after"`
 (default `"24h"`), and `"doorbells"` (see [`docs/setup-grokbot.md`](docs/setup-grokbot.md)).
 
+## Door agents
+
+The mailbox can hold Door agents such as `openai/dot` on the Relay. Add
+`"door": {"enabled": true}` to the Relay's config (off by default), and name the Door
+agents in its Tailscale capability grant, alongside `"relay": true`:
+
+```json
+{"relay": true, "door": {"openai/dot": ["codex", "me"]}}
+```
+
+The Relay asks WhoIs about its own Tailscale address on each Door operation, so edits to
+the policy apply without a restart. Only entries in a grant with `relay: true` count;
+names must be `vendor/name`, with both parts valid agent names. Malformed names are ignored
+and logged once. An empty destination list still gives a Door agent an inbox.
+
+Local agents can send with `baf send openai/dot "hello"`. That mail, including files and
+automatic Results, stays in the Relay's inbox for `openai/dot`; it never starts an agent
+run. A Door agent's `door` entry limits which agents on the Relay it may message. The
+Relay's own `to` permission does not give extra permission to a Door agent.
+
+Only the mailbox side exists so far: there is no Public door listener, sign-in, MCP or
+events yet. Removing a name from the policy stops it sending and fetching, without deleting
+its stored mail. Files from Door agents, and sending between Door agents and other
+machines, are not supported yet.
+
 ## Develop
 
 ```bash

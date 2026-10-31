@@ -36,6 +36,14 @@ type Config struct {
 	// Doorbells are the doorbell keys other nodes' owners gave this node,
 	// by node name. For grokbot it is the Bridge bot's routine webhook.
 	Doorbells map[string]DoorbellConfig `json:"doorbells,omitempty"`
+
+	// Door enables holding the Door agents named in this node's own grant.
+	Door DoorConfig `json:"door,omitempty"`
+}
+
+// DoorConfig switches on the Public door's mailbox support. Off by default.
+type DoorConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // DoorbellConfig is one node's doorbell. The key stays in its own file

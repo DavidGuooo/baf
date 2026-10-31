@@ -93,6 +93,9 @@ type Options struct {
 	// Doorbell wakes another node's agents. Optional.
 	Doorbell Doorbell
 
+	// Door reads this node's grants. Nil means the Public door is disabled.
+	Door DoorIdentity
+
 	GiveUpAfter time.Duration // default DefaultGiveUpAfter
 	RetryDelay  time.Duration // wait after a failed try before the next; default 5s
 
@@ -110,6 +113,7 @@ type Mailbox struct {
 	now         func() time.Time
 	transport   Transport
 	doorbell    Doorbell
+	door        DoorIdentity
 	giveUpAfter time.Duration
 	retryDelay  time.Duration
 
@@ -161,6 +165,7 @@ func Open(opts Options) (*Mailbox, error) {
 		now:         opts.Now,
 		transport:   opts.Transport,
 		doorbell:    opts.Doorbell,
+		door:        opts.Door,
 		giveUpAfter: opts.GiveUpAfter,
 		retryDelay:  opts.RetryDelay,
 		wake:        make(chan struct{}, 1),
@@ -185,6 +190,9 @@ func (m *Mailbox) Node() string { return m.node }
 // agentFor returns the adapter for name (nil = inbox only) and whether name
 // is an agent here at all. baf's own name never is.
 func (m *Mailbox) agentFor(name string) (agent.Adapter, bool) {
+	if _, err := envelope.ParseAddress("x/" + name); err != nil {
+		return nil, false
+	}
 	if name == SystemAgent {
 		return nil, false
 	}
@@ -208,7 +216,7 @@ func (m *Mailbox) Send(env envelope.Envelope) (Receipt, error) {
 		return Receipt{}, reject("%q is not an agent on %s", env.FromAgent, m.node)
 	}
 	// A typo in the machine name fails now, not after 24 hours of retries.
-	if to, err := envelope.ParseAddress(env.To); err == nil && to.Node != m.node && m.transport != nil {
+	if to, err := envelope.ParseAddress(env.To); err == nil && to.Node != m.node && m.transport != nil && m.door == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := m.transport.Known(ctx, to.Node)
 		cancel()
@@ -251,13 +259,16 @@ func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 		return Receipt{}, err
 	}
 	to, _ := envelope.ParseAddress(env.To) // checked by Validate
-	var (
-		r   Receipt
-		err error
-	)
+	door, err := m.doorDestination(to)
+	if err != nil {
+		return Receipt{}, err
+	}
+	var r Receipt
 	switch {
 	case to.Node == m.node:
 		r, err = m.acceptTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent})
+	case door:
+		r, err = m.storeInboxTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent}, to.String(), nil, true)
 	case m.transport == nil:
 		err = ErrRemoteNotSupported
 	default:
@@ -283,6 +294,7 @@ func (m *Mailbox) acceptTx(tx *sql.Tx, env envelope.Envelope, from Principal) (R
 // storeTx stores env for one of this node's agents. checkThread is false
 // only for baf's own notices, which may continue any of the agent's threads.
 func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, checkThread bool) (Receipt, error) {
+	env.FromAgent = from.Agent
 	if err := env.Validate(); err != nil {
 		return Receipt{}, &Rejection{Reason: err.Error()}
 	}
@@ -294,12 +306,21 @@ func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, che
 	if !ok {
 		return Receipt{}, reject("there is no agent %q on %s", to.Agent, m.node)
 	}
+	return m.storeInboxTx(tx, env, from, to.Agent, adapter, checkThread)
+}
 
+// storeInboxTx uses the full address as the inbox name for a Door agent.
+// Its nil adapter means mail waits here until the Door agent reads it.
+func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal, inbox string, adapter agent.Adapter, checkThread bool) (Receipt, error) {
 	// A retry of a message already stored gets the same receipt again.
 	var storedAt int64
-	err := tx.QueryRow(`SELECT received_at FROM messages WHERE sender_node = ? AND id = ?`,
-		from.Node, env.ID).Scan(&storedAt)
+	var fromAgent string
+	err := tx.QueryRow(`SELECT received_at, from_agent FROM messages WHERE sender_node = ? AND id = ?`,
+		from.Node, env.ID).Scan(&storedAt, &fromAgent)
 	if err == nil {
+		if fromAgent != from.Agent {
+			return Receipt{}, reject("message id %q is already used by another agent; choose a new id", env.ID)
+		}
 		return Receipt{ID: env.ID, StoredAt: time.UnixMilli(storedAt), Duplicate: true}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -307,7 +328,7 @@ func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, che
 	}
 
 	if env.ToThread != "" && checkThread {
-		if err := m.useThreadTx(tx, to.Agent, from.String(), env.ToThread); err != nil {
+		if err := m.useThreadTx(tx, inbox, from.String(), env.ToThread); err != nil {
 			return Receipt{}, err
 		}
 	}
@@ -327,7 +348,7 @@ func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, che
 	_, err = tx.Exec(`INSERT INTO messages
 		(sender_node, id, kind, from_agent, to_agent, to_thread, envelope, state, received_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		from.Node, env.ID, env.Kind, env.FromAgent, to.Agent, env.ToThread, raw, state, now.UnixMilli())
+		from.Node, env.ID, env.Kind, env.FromAgent, inbox, env.ToThread, raw, state, now.UnixMilli())
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -596,7 +617,8 @@ func (m *Mailbox) endRunTx(tx *sql.Tx, runID int64, agentName, threadID string, 
 	}
 	if _, err := m.sendTx(tx, result); err != nil {
 		// The run's end is still recorded; only the answer is lost. This
-		// happens only if the sender's agent no longer exists here.
+		// can happen if the sender's agent no longer exists here, or its
+		// Door policy can no longer be read or no longer names it.
 		slog.Error("send result", "request", req.ID, "to", sender, "err", err)
 	}
 	return nil

@@ -77,6 +77,10 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 		return err
 	}
 
+	var door mailbox.DoorIdentity
+	if cfg.Door.Enabled {
+		door = ts
+	}
 	mb, err := mailbox.Open(mailbox.Options{
 		Path:        filepath.Join(home, "mailbox.db"),
 		Node:        node,
@@ -84,6 +88,7 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 		RunEnv:      runEnv(home),
 		Transport:   &transport.Client{Lookup: ts.Lookup, Port: port},
 		Doorbell:    &transport.Doorbells{From: node, Bells: bells},
+		Door:        door,
 		GiveUpAfter: cfg.GiveUp(),
 	})
 	if err != nil {

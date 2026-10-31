@@ -8,9 +8,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
+
+	"github.com/DavidGuooo/baf/internal/envelope"
 
 	"tailscale.com/client/local"
 	"tailscale.com/tailcfg"
@@ -25,8 +30,9 @@ const Capability = "github.com/DavidGuooo/baf/msg"
 //
 //	"app": {"github.com/DavidGuooo/baf/msg": [{"to": ["codex", "claude"]}]}
 type Grant struct {
-	To    []string `json:"to,omitempty"`    // agents the sender may message; "*" = any
-	Relay bool     `json:"relay,omitempty"` // may forward for others (not used yet)
+	To    []string            `json:"to,omitempty"`    // agents the sender may message; "*" = any
+	Relay bool                `json:"relay,omitempty"` // may hold Door agents and forward for them
+	Door  map[string][]string `json:"door,omitempty"`  // Door agent address -> agents it may message
 }
 
 // Peer is who is connecting, as Tailscale reports it.
@@ -42,6 +48,46 @@ type Peer struct {
 func (p Peer) MayMessage(agentName string) bool {
 	for _, g := range p.Grants {
 		if slices.Contains(g.To, "*") || slices.Contains(g.To, agentName) {
+			return true
+		}
+	}
+	return false
+}
+
+var malformedDoors sync.Map // log each malformed policy name only once
+
+func validDoor(name string) bool {
+	if _, err := envelope.ParseAddress(name); err != nil {
+		if _, seen := malformedDoors.LoadOrStore(name, true); !seen {
+			slog.Warn("ignoring malformed Door agent in Tailscale policy", "name", name, "err", err)
+		}
+		return false
+	}
+	return true
+}
+
+// DoorAgents lists the Door agents this peer holds, once each, in name order.
+// Only a grant with relay: true can name Door agents.
+func (p Peer) DoorAgents() []string {
+	var names []string
+	for _, g := range p.Grants {
+		for name := range g.Door {
+			if validDoor(name) && g.Relay {
+				names = append(names, name)
+			}
+		}
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// DoorMayMessage checks the Door agent's own permission, never the Relay's To.
+func (p Peer) DoorMayMessage(doorAgent, agentName string) bool {
+	if !slices.Contains(p.DoorAgents(), doorAgent) {
+		return false
+	}
+	for _, g := range p.Grants {
+		if g.Relay && (slices.Contains(g.Door[doorAgent], "*") || slices.Contains(g.Door[doorAgent], agentName)) {
 			return true
 		}
 	}
@@ -69,6 +115,19 @@ func (c *Client) Self(ctx context.Context) (Self, error) {
 		return Self{}, errors.New("tailscale reports no name for this machine; is it logged in?")
 	}
 	return Self{Node: shortName(st.Self.DNSName), Addrs: st.TailscaleIPs}, nil
+}
+
+// SelfPeer reads this node's own grants through WhoIs, just like a caller's.
+// Ask afresh so policy changes take effect without restarting baf.
+func (c *Client) SelfPeer(ctx context.Context) (Peer, error) {
+	self, err := c.Self(ctx)
+	if err != nil {
+		return Peer{}, err
+	}
+	if len(self.Addrs) == 0 {
+		return Peer{}, errors.New("tailscale has no address for this machine yet")
+	}
+	return c.WhoIs(ctx, net.JoinHostPort(self.Addrs[0].String(), "0"))
 }
 
 // ErrNoSuchNode means no machine with that name is on the tailnet.

@@ -41,27 +41,31 @@ type RunProgress struct {
 // Progress reports on message id from senderNode. A message from any other
 // node is ErrNotFound, so a node sees only its own messages.
 func (m *Mailbox) Progress(senderNode, id string) (Progress, error) {
+	return m.progress(Principal{Node: senderNode}, id)
+}
+
+func (m *Mailbox) progress(from Principal, id string) (Progress, error) {
 	var (
 		p                       Progress
-		toAgent                 string
 		received                int64
 		readAt                  sql.NullInt64
 		runState, thread, doing sql.NullString
 		started, ended, doingAt sql.NullInt64
 	)
-	err := m.db.QueryRow(`SELECT m.to_agent, m.state, m.received_at, m.read_at,
+	err := m.db.QueryRow(`SELECT json_extract(m.envelope, '$.to'), m.state, m.received_at, m.read_at,
 			r.state, r.thread_id, r.started_at, r.ended_at, r.doing, r.doing_at
 		FROM messages m LEFT JOIN runs r ON r.message_seq = m.seq
 		WHERE m.sender_node = ? AND m.id = ?
-		ORDER BY r.id DESC LIMIT 1`, senderNode, id).Scan(
-		&toAgent, &p.State, &received, &readAt, &runState, &thread, &started, &ended, &doing, &doingAt)
+		AND (? = '' OR m.from_agent = ?)
+		ORDER BY r.id DESC LIMIT 1`, from.Node, id, from.Agent, from.Agent).Scan(
+		&p.To, &p.State, &received, &readAt, &runState, &thread, &started, &ended, &doing, &doingAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Progress{}, ErrNotFound
 	}
 	if err != nil {
 		return Progress{}, err
 	}
-	p.ID, p.To = id, Principal{Node: m.node, Agent: toAgent}.String()
+	p.ID = id
 	p.StoredAt, p.ReadAt = time.UnixMilli(received), timePtr(readAt)
 	if runState.Valid {
 		p.Run = &RunProgress{
@@ -112,11 +116,22 @@ const progressTimeout = 5 * time.Second
 // SentStatus reports on message id, sent by one of this node's agents. It is
 // ErrNotFound if no agent here sent a message with that id.
 func (m *Mailbox) SentStatus(ctx context.Context, id string) (SentStatus, error) {
+	return m.sentStatus(ctx, Principal{Node: m.node}, id)
+}
+
+func (m *Mailbox) sentStatus(ctx context.Context, from Principal, id string) (SentStatus, error) {
 	var (
 		s   SentStatus
 		env envelope.Envelope
 	)
-	out, outEnv, err := scanOutItem(m.db.QueryRow(`SELECT `+outItemColumns+` FROM outbox WHERE id = ?`, id))
+	// Only local agents use the outbox. Door agents may have chosen the
+	// same id as an unrelated local send, so never look there for their mail.
+	var out OutItem
+	var outEnv envelope.Envelope
+	err := sql.ErrNoRows
+	if from.Agent == "" {
+		out, outEnv, err = scanOutItem(m.db.QueryRow(`SELECT `+outItemColumns+` FROM outbox WHERE id = ?`, id))
+	}
 	switch {
 	case err == nil:
 		env, s.Handover, s.SentAt = outEnv, &out, out.CreatedAt
@@ -126,8 +141,8 @@ func (m *Mailbox) SentStatus(ctx context.Context, id string) (SentStatus, error)
 			raw  []byte
 			sent int64
 		)
-		err := m.db.QueryRow(`SELECT envelope, received_at FROM messages WHERE sender_node = ? AND id = ?`,
-			m.node, id).Scan(&raw, &sent)
+		err := m.db.QueryRow(`SELECT envelope, received_at FROM messages WHERE sender_node = ? AND id = ?
+			AND (? = '' OR from_agent = ?)`, from.Node, id, from.Agent, from.Agent).Scan(&raw, &sent)
 		if errors.Is(err, sql.ErrNoRows) {
 			return SentStatus{}, ErrNotFound
 		}
@@ -142,9 +157,10 @@ func (m *Mailbox) SentStatus(ctx context.Context, id string) (SentStatus, error)
 		return SentStatus{}, err
 	}
 	s.ID, s.Kind, s.FromAgent, s.To = env.ID, string(env.Kind), env.FromAgent, env.To
+	from.Agent = env.FromAgent
 
 	if env.Kind == envelope.Request {
-		if s.Result, err = m.resultFor(env); err != nil {
+		if s.Result, err = m.resultFor(env, from); err != nil {
 			return SentStatus{}, err
 		}
 	}
@@ -152,7 +168,7 @@ func (m *Mailbox) SentStatus(ctx context.Context, id string) (SentStatus, error)
 	switch {
 	case s.Handover == nil:
 		// The receiver is this mailbox: nothing to ask.
-		p, err := m.Progress(m.node, id)
+		p, err := m.progress(from, id)
 		if err != nil {
 			return SentStatus{}, err
 		}
@@ -177,7 +193,7 @@ func (m *Mailbox) SentStatus(ctx context.Context, id string) (SentStatus, error)
 
 // resultFor finds the Result that answers req, if one has arrived. Only the
 // agent req went to can answer it.
-func (m *Mailbox) resultFor(req envelope.Envelope) (*ResultInfo, error) {
+func (m *Mailbox) resultFor(req envelope.Envelope, from Principal) (*ResultInfo, error) {
 	to, _ := envelope.ParseAddress(req.To)
 	var (
 		raw      []byte
@@ -185,7 +201,8 @@ func (m *Mailbox) resultFor(req envelope.Envelope) (*ResultInfo, error) {
 	)
 	err := m.db.QueryRow(`SELECT envelope, received_at FROM messages
 		WHERE kind = 'result' AND sender_node = ? AND from_agent = ? AND json_extract(envelope, '$.reply_to') = ?
-		ORDER BY seq LIMIT 1`, to.Node, to.Agent, req.ID).Scan(&raw, &received)
+		AND json_extract(envelope, '$.to') = ?
+		ORDER BY seq LIMIT 1`, to.Node, to.Agent, req.ID, from.String()).Scan(&raw, &received)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

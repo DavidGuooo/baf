@@ -79,7 +79,7 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 			"from_agent", env.FromAgent, "to", env.To, "kind", env.Kind, "id", env.ID, "grants", grantsJSON(peer.Grants))
 
 		// Default deny: only a grant naming this agent (or "*") lets it in.
-		// The relay's origin field is not trusted yet; there is no relay.
+		// The Relay's origin field is not trusted yet; forwarding is deferred.
 		if !peer.MayMessage(to.Agent) {
 			reason := fmt.Sprintf("%s may not message %s: no %s grant with \"to\" naming %q in the Tailscale policy",
 				peer.Node, env.To, tailnet.Capability, to.Agent)

@@ -56,6 +56,8 @@ Usage:
 
 ADDR is node/agent, or just agent for one on this machine. TEXT "-" reads stdin;
 it may be left out when you attach files.
+On the Relay, ADDR may also be a Door agent such as openai/dot, named in the
+Tailscale policy. Holding Door agents requires config: "door": {"enabled": true}.
 
 Options for send and request:
   --file PATH        attach a file (repeatable; up to 20, 100 MB each)
