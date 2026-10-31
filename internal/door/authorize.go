@@ -32,6 +32,7 @@ var allowPage = template.Must(template.New("allow").Parse(`<!doctype html>
 {{if .Warn}}<p><strong>Warning:</strong> This client's identity or redirect does not match ` +
 	`the Door agent's vendor. Allow only if you intended to connect this client.</p>{{end}}
 <p>What this Door agent may message is set in the Tailscale policy. Allow replaces its earlier connector.</p>
+<p>To cut it off later, run <code>baf door revoke {{.Agent}}</code> on this Relay.</p>
 <form method="post" action="/authorize"><input type="hidden" name="csrf" value="{{.CSRF}}">
 <p><button name="decision" value="allow">Allow</button> ` +
 	`<button name="decision" value="deny">Deny</button></p></form></html>`))

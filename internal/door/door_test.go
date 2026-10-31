@@ -170,6 +170,9 @@ func (h *harness) code(name string) string {
 	if status != 200 || csrf == "" || !strings.Contains(body, "owner@example.com") || !strings.Contains(body, name) {
 		h.t.Fatalf("Allow page: %d %s", status, body)
 	}
+	if !strings.Contains(body, "baf door revoke "+name) {
+		h.t.Fatal("Allow page does not say how to revoke the connector")
+	}
 	if strings.Contains(body, `name="days"`) || strings.Contains(body, "Connector lasts") {
 		h.t.Fatal("Allow page still asks for a connector duration")
 	}
