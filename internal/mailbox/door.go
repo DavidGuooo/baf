@@ -3,7 +3,6 @@ package mailbox
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -31,8 +30,8 @@ func (m *Mailbox) doorPeer() (tailnet.Peer, error) {
 	return peer, nil
 }
 
-// DoorAgents names the Door agents this mailbox currently holds. Later the
-// Public door also uses this to check a name before offering sign-in.
+// DoorAgents names the Door agents this mailbox currently holds. The Public
+// door also uses this to check a name before offering sign-in.
 func (m *Mailbox) DoorAgents() ([]string, error) {
 	peer, err := m.doorPeer()
 	if err != nil {
@@ -56,8 +55,8 @@ func (m *Mailbox) requireDoor(name string) (Principal, tailnet.Peer, error) {
 	return from, peer, nil
 }
 
-// doorDestination separates mail held here from mail for a tailnet machine.
-// An unknown name must never sit in the outbox waiting for a vendor machine.
+// doorDestination reports whether this mailbox holds the destination.
+// route resolves other names to a tailnet machine or the Relay.
 func (m *Mailbox) doorDestination(to envelope.Address) (bool, error) {
 	if to.Node == m.node || m.door == nil {
 		return false, nil
@@ -69,23 +68,12 @@ func (m *Mailbox) doorDestination(to envelope.Address) (bool, error) {
 	if slices.Contains(names, to.String()) {
 		return true, nil
 	}
-	if m.transport != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := m.transport.Known(ctx, to.Node)
-		cancel()
-		if err == nil {
-			return false, nil
-		}
-		if !errors.Is(err, tailnet.ErrNoSuchNode) {
-			return false, err
-		}
-	}
-	return false, reject("the Tailscale policy does not list %q as a Door agent on this Relay, and it is not a known tailnet destination", to.String())
+	return false, nil
 }
 
 // FromDoor stores mail from an authenticated Door agent. The Public door
 // supplies doorAgent from its token, never from fields in the message.
-// Forwarding and authenticated file uploads are not supported yet.
+// Authenticated file uploads from Door agents are not supported yet.
 func (m *Mailbox) FromDoor(doorAgent string, env envelope.Envelope) (Receipt, error) {
 	from, peer, err := m.requireDoor(doorAgent)
 	if err != nil {
@@ -102,18 +90,30 @@ func (m *Mailbox) FromDoor(doorAgent string, env envelope.Envelope) (Receipt, er
 		return Receipt{}, &Rejection{Reason: err.Error()}
 	}
 	to, _ := envelope.ParseAddress(env.To)
-	if to.Node != m.node {
-		return Receipt{}, reject("not yet, the Relay doesn't forward for Door agents yet; address an agent on %s", m.node)
+	node, err := m.route(to)
+	if err != nil {
+		return Receipt{}, err
 	}
-	if !peer.DoorMayMessage(doorAgent, to.Agent) {
-		return Receipt{}, reject("%s may not message %s: its door entry in the Tailscale policy does not allow %q", doorAgent, env.To, to.Agent)
+	target := to.Agent
+	if node == m.node && to.Node != m.node {
+		target = to.String()
+	}
+	if node == m.node && !peer.DoorMayMessage(doorAgent, target) {
+		return Receipt{}, reject("%s may not message %s: its door entry in the Tailscale policy does not allow %q", doorAgent, env.To, target)
+	}
+	if node != m.node {
+		env.Origin = doorAgent
 	}
 	if len(env.Body.Files) != 0 {
 		return Receipt{}, reject("files from Door agents are not supported yet")
 	}
 	var r Receipt
 	err = m.inTx(func(tx *sql.Tx) (err error) {
-		r, err = m.acceptTx(tx, env, from)
+		if node == m.node {
+			r, err = m.acceptTx(tx, env, from)
+		} else {
+			r, err = m.enqueueTx(tx, env, envelope.Address{Node: node, Agent: to.Agent})
+		}
 		if err == nil && !r.Duplicate && env.FromThread != "" {
 			err = m.shareTx(tx, doorAgent, to.String(), env.FromThread)
 		}

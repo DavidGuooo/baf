@@ -55,10 +55,12 @@ type net2 struct {
 }
 
 type nodeOpts struct {
-	agents   map[string]agent.Adapter
-	giveUp   time.Duration
-	doorbell mailbox.Doorbell
-	wrap     func(http.Handler) http.Handler
+	agents    map[string]agent.Adapter
+	giveUp    time.Duration
+	doorbell  mailbox.Doorbell
+	wrap      func(http.Handler) http.Handler
+	door      mailbox.DoorIdentity
+	findRelay func(context.Context) (string, error)
 }
 
 func newNet(t *testing.T) *net2 {
@@ -100,8 +102,9 @@ func (n *net2) add(name string, ip string, o nodeOpts) *node {
 		Path:        filepath.Join(t.TempDir(), name+".db"),
 		Node:        name,
 		Agents:      o.agents,
-		Transport:   &Client{Lookup: lookup, HTTP: hc},
+		Transport:   &Client{Lookup: lookup, HTTP: hc, FindRelay: o.findRelay},
 		Doorbell:    o.doorbell,
+		Door:        o.door,
 		GiveUpAfter: o.giveUp,
 		RetryDelay:  20 * time.Millisecond,
 	})
@@ -340,7 +343,7 @@ func TestUnknownMachineIsRefusedAtOnce(t *testing.T) {
 	imac := n.add("imac", "100.64.0.1", nodeOpts{agents: map[string]agent.Adapter{"me": nil}})
 	_, err := imac.mb.Send(envelope.Envelope{Kind: envelope.Notice, To: "grokbt/tokdev", FromAgent: "me", Body: envelope.Body{Text: "x"}})
 	var rej *mailbox.Rejection
-	if !errors.As(err, &rej) || !strings.Contains(rej.Reason, "no machine") {
+	if !errors.As(err, &rej) || !strings.Contains(rej.Reason, "no Relay found") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -432,7 +435,7 @@ func TestOlderReceiverCantReportProgress(t *testing.T) {
 		Lookup: func(context.Context, string) (netip.Addr, bool, error) { return ap.Addr(), true, nil },
 		Port:   int(ap.Port()),
 	}
-	_, err := c.Progress(context.Background(), "grokbot", "01X")
+	_, err := c.Progress(context.Background(), "grokbot", "01X", "")
 	if err == nil || !strings.Contains(err.Error(), "grokbot runs an older baf") {
 		t.Fatalf("err = %v", err)
 	}

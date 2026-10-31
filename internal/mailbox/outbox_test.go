@@ -21,7 +21,7 @@ type fileTransport struct {
 }
 
 func (f *fileTransport) Known(context.Context, string) error { return nil }
-func (f *fileTransport) PutFile(ctx context.Context, _, _ string, file envelope.File, body io.Reader) error {
+func (f *fileTransport) PutFile(ctx context.Context, _, _, _ string, file envelope.File, body io.Reader) error {
 	return f.put(ctx, file, body)
 }
 func (f *fileTransport) Push(context.Context, string, envelope.Envelope) (Receipt, error) {

@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/DavidGuooo/baf/internal/envelope"
@@ -78,15 +79,24 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 		slog.Info("push received", "from_node", peer.Node, "tags", peer.Tags, "login", peer.Login,
 			"from_agent", env.FromAgent, "to", env.To, "kind", env.Kind, "id", env.ID, "grants", grantsJSON(peer.Grants))
 
-		// Default deny: only a grant naming this agent (or "*") lets it in.
-		// The Relay's origin field is not trusted yet; forwarding is deferred.
-		if !peer.MayMessage(to.Agent) {
-			reason := fmt.Sprintf("%s may not message %s: no %s grant with \"to\" naming %q in the Tailscale policy",
-				peer.Node, env.To, tailnet.Capability, to.Agent)
-			reply(w, http.StatusForbidden, pushResponse{Error: reason, Rejected: true})
+		from, err := mb.CheckIncoming(r.Context(), peer, to, env.Origin)
+		if err != nil {
+			var rej *mailbox.Rejection
+			final := errors.As(err, &rej)
+			code := http.StatusServiceUnavailable
+			if final {
+				code = http.StatusForbidden
+			}
+			reply(w, code, pushResponse{Error: err.Error(), Rejected: final})
 			return
 		}
-		receipt, err := mb.Accept(env, mailbox.Principal{Node: peer.Node, Agent: env.FromAgent})
+		var receipt mailbox.Receipt
+		if env.Origin == "" {
+			from.Agent = env.FromAgent
+			receipt, err = mb.Accept(env, from)
+		} else {
+			receipt, err = mb.AcceptForwarded(env, from, peer.Node)
+		}
 		var rej *mailbox.Rejection
 		switch {
 		case errors.As(err, &rej):
@@ -105,15 +115,24 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 			reply(w, http.StatusForbidden, fileResponse{Error: "unknown caller", Rejected: true})
 			return
 		}
-		to, err := envelope.ParseAddress(mb.Node() + "/" + r.URL.Query().Get("to"))
+		// Older senders use ?to=agent; full addresses use ?address=node/agent.
+		address := r.URL.Query().Get("address")
+		if address == "" {
+			address = mb.Node() + "/" + r.URL.Query().Get("to")
+		}
+		to, err := envelope.ParseAddress(address)
 		if err != nil {
 			reply(w, http.StatusBadRequest, fileResponse{Error: "bad to: " + err.Error(), Rejected: true})
 			return
 		}
-		if !peer.MayMessage(to.Agent) {
-			reason := fmt.Sprintf("%s may not message %s: no %s grant with \"to\" naming %q in the Tailscale policy",
-				peer.Node, mb.Node()+"/"+to.Agent, tailnet.Capability, to.Agent)
-			reply(w, http.StatusForbidden, fileResponse{Error: reason, Rejected: true})
+		if _, err := mb.CheckIncoming(r.Context(), peer, to, r.URL.Query().Get("origin")); err != nil {
+			var rej *mailbox.Rejection
+			final := errors.As(err, &rej)
+			code := http.StatusServiceUnavailable
+			if final {
+				code = http.StatusForbidden
+			}
+			reply(w, code, fileResponse{Error: err.Error(), Rejected: final})
 			return
 		}
 		if r.ContentLength < 0 || (r.ContentLength == 0 && r.Header.Get("Content-Length") == "") {
@@ -139,8 +158,8 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 		}
 	})
 
-	// Only the node that sent a message may ask about it, and only while the
-	// policy still lets it message that agent (ADR-0006).
+	// Only the sending node, or the recorded forwarding Relay, may ask.
+	// Its current policy must still allow the message (ADR-0006).
 	mux.HandleFunc("GET /v1/progress/{id}", func(w http.ResponseWriter, r *http.Request) {
 		peer, err := id.WhoIs(r.Context(), r.RemoteAddr)
 		if err != nil {
@@ -149,7 +168,13 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 			return
 		}
 		msgID := r.PathValue("id")
-		p, err := mb.Progress(peer.Node, msgID)
+		var p mailbox.Progress
+		origin := r.URL.Query().Get("origin")
+		if origin == "" {
+			p, err = mb.Progress(peer.Node, msgID)
+		} else {
+			p, err = mb.ForwardedProgress(peer.Node, origin, msgID)
+		}
 		switch {
 		case errors.Is(err, mailbox.ErrNotFound):
 			reply(w, http.StatusNotFound, progressResponse{
@@ -161,9 +186,9 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 			return
 		}
 		to, _ := envelope.ParseAddress(p.To)
-		if !peer.MayMessage(to.Agent) {
+		if _, err := mb.CheckIncoming(r.Context(), peer, to, p.Origin); err != nil {
 			reply(w, http.StatusForbidden, progressResponse{
-				Error: fmt.Sprintf("%s may no longer message %s, so it can't follow its messages there", peer.Node, p.To)})
+				Error: fmt.Sprintf("%s may no longer message %s, so it can't follow its messages there: %s", peer.Node, p.To, err)})
 			return
 		}
 		reply(w, http.StatusOK, progressResponse{Progress: &p})
@@ -188,9 +213,30 @@ type Lookup func(ctx context.Context, node string) (netip.Addr, bool, error)
 // Client pushes messages to other nodes' mailboxes. It implements
 // mailbox.Transport.
 type Client struct {
-	Lookup Lookup
-	Port   int // the receiver's baf port; DefaultPort if 0
-	HTTP   *http.Client
+	Lookup    Lookup
+	FindRelay func(context.Context) (string, error)
+	Port      int // the receiver's baf port; DefaultPort if 0
+	HTTP      *http.Client
+
+	relayMu    sync.Mutex
+	relayNode  string
+	relayErr   error
+	relayUntil time.Time
+}
+
+// Relay caches discovery for a minute. A failed handover asks afresh.
+func (c *Client) Relay(ctx context.Context, refresh bool) (string, error) {
+	c.relayMu.Lock()
+	defer c.relayMu.Unlock()
+	if !refresh && time.Now().Before(c.relayUntil) {
+		return c.relayNode, c.relayErr
+	}
+	if c.FindRelay == nil {
+		return "", errors.New("no Relay found: Relay discovery is unavailable")
+	}
+	c.relayNode, c.relayErr = c.FindRelay(ctx)
+	c.relayUntil = time.Now().Add(time.Minute)
+	return c.relayNode, c.relayErr
 }
 
 func (c *Client) Known(ctx context.Context, node string) error {
@@ -235,12 +281,12 @@ func (c *Client) Push(ctx context.Context, node string, env envelope.Envelope) (
 	}
 }
 
-func (c *Client) Progress(ctx context.Context, node, id string) (mailbox.Progress, error) {
+func (c *Client) Progress(ctx context.Context, node, id, origin string) (mailbox.Progress, error) {
 	addr, _, err := c.Lookup(ctx, node)
 	if err != nil {
 		return mailbox.Progress{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", c.url(addr, "/v1/progress/"+url.PathEscape(id)), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.url(addr, "/v1/progress/"+url.PathEscape(id)+"?origin="+url.QueryEscape(origin)), nil)
 	if err != nil {
 		return mailbox.Progress{}, err
 	}
@@ -267,12 +313,26 @@ func (c *Client) Progress(ctx context.Context, node, id string) (mailbox.Progres
 	}
 }
 
-func (c *Client) PutFile(ctx context.Context, node, toAgent string, f envelope.File, body io.Reader) error {
+func (c *Client) PutFile(ctx context.Context, node, to, origin string, f envelope.File, body io.Reader) error {
 	addr, _, err := c.Lookup(ctx, node)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, "PUT", c.url(addr, "/v1/files/"+f.SHA256+"?to="+url.QueryEscape(toAgent)), body)
+	q := url.Values{}
+	// Keep the old form for direct uploads to nodes that have not upgraded.
+	address, err := envelope.ParseAddress(to)
+	if err != nil {
+		return err
+	}
+	if address.Node == node {
+		q.Set("to", address.Agent)
+	} else {
+		q.Set("address", to)
+	}
+	if origin != "" {
+		q.Set("origin", origin)
+	}
+	req, err := http.NewRequestWithContext(ctx, "PUT", c.url(addr, "/v1/files/"+f.SHA256+"?"+q.Encode()), body)
 	if err != nil {
 		return err
 	}
@@ -355,8 +415,12 @@ func (d *Doorbells) Ring(ctx context.Context, node string, env envelope.Envelope
 	if !ok {
 		return mailbox.ErrNoDoorbell
 	}
-	body, _ := json.Marshal(ringBody{Baf: envelope.Version, From: d.From,
-		Messages: []ringItem{{ID: env.ID, From: d.From + "/" + env.FromAgent, To: env.To, Kind: string(env.Kind)}}})
+	from, sender := d.From, d.From+"/"+env.FromAgent
+	if env.Origin != "" {
+		from, sender = env.Origin, env.Origin
+	}
+	body, _ := json.Marshal(ringBody{Baf: envelope.Version, From: from,
+		Messages: []ringItem{{ID: env.ID, From: sender, To: env.To, Kind: string(env.Kind)}}})
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", bell.URL, bytes.NewReader(body))

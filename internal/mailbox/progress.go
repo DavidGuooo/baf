@@ -16,6 +16,7 @@ import (
 // as a message (ADR-0006).
 type Progress struct {
 	ID       string    `json:"id"`
+	Origin   string    `json:"origin,omitempty"`
 	To       string    `json:"to"` // node/agent
 	StoredAt time.Time `json:"stored_at"`
 
@@ -45,6 +46,19 @@ func (m *Mailbox) Progress(senderNode, id string) (Progress, error) {
 }
 
 func (m *Mailbox) progress(from Principal, id string) (Progress, error) {
+	return m.progressVia(from, id, "")
+}
+
+// ForwardedProgress requires the Relay recorded when the message arrived.
+func (m *Mailbox) ForwardedProgress(relay, origin, id string) (Progress, error) {
+	from, err := envelope.ParseAddress(origin)
+	if err != nil {
+		return Progress{}, ErrNotFound
+	}
+	return m.progressVia(from, id, relay)
+}
+
+func (m *Mailbox) progressVia(from Principal, id, relay string) (Progress, error) {
 	var (
 		p                       Progress
 		received                int64
@@ -52,13 +66,14 @@ func (m *Mailbox) progress(from Principal, id string) (Progress, error) {
 		runState, thread, doing sql.NullString
 		started, ended, doingAt sql.NullInt64
 	)
-	err := m.db.QueryRow(`SELECT json_extract(m.envelope, '$.to'), m.state, m.received_at, m.read_at,
+	err := m.db.QueryRow(`SELECT json_extract(m.envelope, '$.to'), COALESCE(json_extract(m.envelope, '$.origin'), ''), m.state, m.received_at, m.read_at,
 			r.state, r.thread_id, r.started_at, r.ended_at, r.doing, r.doing_at
 		FROM messages m LEFT JOIN runs r ON r.message_seq = m.seq
 		WHERE m.sender_node = ? AND m.id = ?
 		AND (? = '' OR m.from_agent = ?)
-		ORDER BY r.id DESC LIMIT 1`, from.Node, id, from.Agent, from.Agent).Scan(
-		&p.To, &p.State, &received, &readAt, &runState, &thread, &started, &ended, &doing, &doingAt)
+		AND (? = '' OR m.forwarding_node = ?)
+		ORDER BY r.id DESC LIMIT 1`, from.Node, id, from.Agent, from.Agent, relay, relay).Scan(
+		&p.To, &p.Origin, &p.State, &received, &readAt, &runState, &thread, &started, &ended, &doing, &doingAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Progress{}, ErrNotFound
 	}
@@ -87,6 +102,7 @@ type SentStatus struct {
 	ID        string    `json:"id"`
 	Kind      string    `json:"kind"`
 	FromAgent string    `json:"from_agent"`
+	Origin    string    `json:"origin,omitempty"`
 	To        string    `json:"to"`
 	SentAt    time.Time `json:"sent_at"`
 
@@ -124,14 +140,14 @@ func (m *Mailbox) sentStatus(ctx context.Context, from Principal, id string) (Se
 		s   SentStatus
 		env envelope.Envelope
 	)
-	// Only local agents use the outbox. Door agents may have chosen the
-	// same id as an unrelated local send, so never look there for their mail.
-	var out OutItem
-	var outEnv envelope.Envelope
-	err := sql.ErrNoRows
-	if from.Agent == "" {
-		out, outEnv, err = scanOutItem(m.db.QueryRow(`SELECT `+outItemColumns+` FROM outbox WHERE id = ?`, id))
+	// A Door agent may see only its own outbox entries, even if another
+	// sender chose the same id for local mail.
+	origin := ""
+	if from.Agent != "" {
+		origin = from.String()
 	}
+	out, outEnv, err := scanOutItem(m.db.QueryRow(`SELECT `+outItemColumns+` FROM outbox
+		WHERE id = ? AND (? = '' OR json_extract(envelope, '$.origin') = ?)`, id, from.Agent, origin))
 	switch {
 	case err == nil:
 		env, s.Handover, s.SentAt = outEnv, &out, out.CreatedAt
@@ -158,6 +174,10 @@ func (m *Mailbox) sentStatus(ctx context.Context, from Principal, id string) (Se
 	}
 	s.ID, s.Kind, s.FromAgent, s.To = env.ID, string(env.Kind), env.FromAgent, env.To
 	from.Agent = env.FromAgent
+	s.Origin = env.Origin
+	if env.Origin != "" {
+		from, _ = envelope.ParseAddress(env.Origin)
+	}
 
 	if env.Kind == envelope.Request {
 		if s.Result, err = m.resultFor(env, from); err != nil {
@@ -178,9 +198,8 @@ func (m *Mailbox) sentStatus(ctx context.Context, from Principal, id string) (Se
 			s.ReceiverError = ErrRemoteNotSupported.Error()
 			break
 		}
-		to, _ := envelope.ParseAddress(env.To) // checked when it was sent
 		pctx, cancel := context.WithTimeout(ctx, progressTimeout)
-		p, err := m.transport.Progress(pctx, to.Node, id)
+		p, err := m.transport.Progress(pctx, s.Handover.Via, id, env.Origin)
 		cancel()
 		if err != nil {
 			s.ReceiverError = err.Error()

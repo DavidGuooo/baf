@@ -217,15 +217,7 @@ func (m *Mailbox) Send(env envelope.Envelope) (Receipt, error) {
 	if _, ok := m.agentFor(env.FromAgent); !ok {
 		return Receipt{}, reject("%q is not an agent on %s", env.FromAgent, m.node)
 	}
-	// A typo in the machine name fails now, not after 24 hours of retries.
-	if to, err := envelope.ParseAddress(env.To); err == nil && to.Node != m.node && m.transport != nil && m.door == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := m.transport.Known(ctx, to.Node)
-		cancel()
-		if err != nil {
-			return Receipt{}, &Rejection{Reason: err.Error()}
-		}
-	}
+	env.Origin = "" // Local agents cannot vouch for a Door agent.
 	var r Receipt
 	err := m.inTx(func(tx *sql.Tx) (err error) {
 		r, err = m.sendTx(tx, env)
@@ -251,6 +243,23 @@ func (m *Mailbox) Accept(env envelope.Envelope, from Principal) (Receipt, error)
 	return r, err
 }
 
+// AcceptForwarded records the connecting Relay alongside the trusted Principal.
+// Only that Relay may later ask about this forwarded message's progress.
+func (m *Mailbox) AcceptForwarded(env envelope.Envelope, from Principal, relay string) (Receipt, error) {
+	var r Receipt
+	err := m.inTx(func(tx *sql.Tx) (err error) {
+		r, err = m.acceptTx(tx, env, from)
+		if err == nil && !r.Duplicate {
+			_, err = tx.Exec(`UPDATE messages SET forwarding_node = ? WHERE sender_node = ? AND id = ?`, relay, from.Node, env.ID)
+		}
+		return err
+	})
+	if err == nil {
+		m.signal()
+	}
+	return r, err
+}
+
 // sendTx routes env from a local agent: straight into the receiver's inbox
 // on this node, or into the outbox for another node.
 func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
@@ -261,7 +270,7 @@ func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 		return Receipt{}, err
 	}
 	to, _ := envelope.ParseAddress(env.To) // checked by Validate
-	door, err := m.doorDestination(to)
+	node, err := m.route(to)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -269,12 +278,10 @@ func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 	switch {
 	case to.Node == m.node:
 		r, err = m.acceptTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent})
-	case door:
+	case node == m.node:
 		r, err = m.storeInboxTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent}, to.String(), nil, true)
-	case m.transport == nil:
-		err = ErrRemoteNotSupported
 	default:
-		r, err = m.enqueueTx(tx, env, to)
+		r, err = m.enqueueTx(tx, env, envelope.Address{Node: node, Agent: to.Agent})
 	}
 	if err != nil {
 		return Receipt{}, err
@@ -302,7 +309,10 @@ func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, che
 	}
 	to, _ := envelope.ParseAddress(env.To)
 	if to.Node != m.node {
-		return Receipt{}, reject("this mailbox is %s, not %s", m.node, to.Node)
+		if _, _, err := m.requireDoor(to.String()); err != nil {
+			return Receipt{}, err
+		}
+		return m.storeInboxTx(tx, env, from, to.String(), nil, checkThread)
 	}
 	adapter, ok := m.agentFor(to.Agent)
 	if !ok {

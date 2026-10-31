@@ -76,6 +76,7 @@ CREATE INDEX IF NOT EXISTS outbox_by_queue ON outbox (state, queue, seq);
 // addedColumns were added to a table after it was first created. CREATE
 // TABLE IF NOT EXISTS leaves an older table as it was, so openDB adds them.
 var addedColumns = []struct{ table, column, decl string }{
+	{"messages", "forwarding_node", "TEXT NOT NULL DEFAULT ''"},
 	{"runs", "doing", "TEXT NOT NULL DEFAULT ''"},
 	{"runs", "doing_at", "INTEGER"},
 }

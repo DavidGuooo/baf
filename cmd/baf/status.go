@@ -45,10 +45,18 @@ func printStatus(w io.Writer, s mailbox.SentStatus, now time.Time) {
 	line := func(label, format string, args ...any) {
 		fmt.Fprintf(w, "  %-12s %s\n", label, fmt.Sprintf(format, args...))
 	}
-	fmt.Fprintf(w, "%s %s from %s to %s\n", s.Kind, s.ID, s.FromAgent, s.To)
+	sender := s.FromAgent
+	if s.Origin != "" {
+		sender = s.Origin
+	}
+	fmt.Fprintf(w, "%s %s from %s to %s\n", s.Kind, s.ID, sender, s.To)
 	line("sent", "%s", stamp(s.SentAt))
 
 	if h := s.Handover; h != nil {
+		node, _, _ := strings.Cut(s.To, "/")
+		if h.Via != "" && h.Via != node {
+			line("via Relay", "%s", h.Via)
+		}
 		switch h.State {
 		case "handed":
 			line("handed over", "%s (%s)", stamp(deref(h.DoneAt)), tries(h.Attempts))
@@ -64,6 +72,9 @@ func printStatus(w io.Writer, s mailbox.SentStatus, now time.Time) {
 	}
 
 	node, _, _ := strings.Cut(s.To, "/")
+	if s.Handover != nil && s.Handover.Via != "" {
+		node = s.Handover.Via
+	}
 	switch p := s.Receiver; {
 	case s.ReceiverError != "":
 		line("receiver", "could not ask %s: %s", node, s.ReceiverError)

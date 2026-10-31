@@ -147,6 +147,9 @@ func (c *Client) Lookup(ctx context.Context, node string) (netip.Addr, bool, err
 	if err != nil {
 		return netip.Addr{}, false, err
 	}
+	if st.Self != nil && shortName(st.Self.DNSName) == node && len(st.TailscaleIPs) > 0 {
+		return st.TailscaleIPs[0], true, nil
+	}
 	for _, p := range st.Peer {
 		if shortName(p.DNSName) == node && len(p.TailscaleIPs) > 0 {
 			return p.TailscaleIPs[0], p.Online, nil

@@ -342,14 +342,18 @@ func outbox(args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tKIND\tFROM\tTO\tSTATE\tTRIES\tNEXT TRY\tGIVES UP\tLAST ERROR")
+	fmt.Fprintln(tw, "ID\tKIND\tFROM\tTO\tVIA\tSTATE\tTRIES\tNEXT TRY\tGIVES UP\tLAST ERROR")
 	for _, it := range items {
 		next, until := "-", "-"
 		if it.State == "waiting" {
 			next = it.NextTry.Local().Format("15:04:05")
 			until = it.ExpiresAt.Local().Format("Jan 2 15:04")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", it.ID, it.Kind, it.FromAgent, it.To, it.State,
+		sender := it.FromAgent
+		if it.Origin != "" {
+			sender = it.Origin
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", it.ID, it.Kind, sender, it.To, it.Via, it.State,
 			it.Attempts, next, until, firstLine(it.LastError, 60))
 	}
 	return tw.Flush()

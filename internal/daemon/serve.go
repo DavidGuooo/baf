@@ -103,7 +103,7 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 		Node:        node,
 		Agents:      adapters,
 		RunEnv:      runEnv(home),
-		Transport:   &transport.Client{Lookup: ts.Lookup, Port: port},
+		Transport:   &transport.Client{Lookup: ts.Lookup, FindRelay: ts.Relay, Port: port},
 		Doorbell:    &transport.Doorbells{From: node, Bells: bells},
 		Door:        doorIdentity,
 		GiveUpAfter: cfg.GiveUp(),

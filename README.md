@@ -129,8 +129,11 @@ for setup, limits, and sign-in logs. Connectors do not expire; a new sign-in rep
 previous connector. Access tokens last one day, and refresh tokens rotate on use.
 Removing a name from the policy stops its access without deleting its stored mail.
 The `message.created` event carries the whole message
-to a subscribed Dot; it does not mark mail read. File transfers through the door and
-sending between Door agents and other machines remain unsupported.
+to a subscribed Dot; it does not mark mail read. Door agents can also exchange mail
+with agents on other tailnet machines through the Relay. Receivers check the Door
+agent's `door` permission, and replies find the Relay through its policy grant.
+See [cross-machine setup](docs/public-door.md#door-agents--other-machines).
+File transfers through MCP remain unsupported.
 
 ## Develop
 

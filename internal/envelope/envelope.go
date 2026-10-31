@@ -48,8 +48,8 @@ type Envelope struct {
 	// never comes from the envelope: the receiver asks Tailscale.
 	FromAgent string `json:"from_agent"`
 
-	// Origin is reserved for the Relay to name the original sender.
-	// It is ignored until forwarding for Door agents is supported.
+	// Origin names the Door agent for whom the Relay forwards.
+	// Receivers accept it only under a relay grant naming that Door agent.
 	Origin string `json:"origin,omitempty"`
 
 	// FromThread is the sender's own thread; ToThread is the receiver's

@@ -1,10 +1,10 @@
-# Setting up the Public door: ChatGPT Dot ↔ agents on the Relay
+# Setting up the Public door: ChatGPT Dot ↔ baf agents
 
 The Public door lets a ChatGPT Dot use baf as `openai/dot`. The Relay holds its mail,
 checks its permissions in the Tailscale policy, and exposes six MCP tools through
-Funnel. Only agents on the Relay can exchange mail with it in this version. MCP events
-ring the Dot when new mail arrives; `inbox` stays the fallback. File transfers through
-the door are not implemented yet.
+Funnel. Agents on the Relay and other tailnet machines can exchange mail with it. MCP
+events ring the Dot when new mail arrives; `inbox` stays the fallback. File transfers
+through MCP are not implemented yet.
 
 These are steps for the owner to run. In the examples, the Relay is **imac**, its
 DNS name is **`imac.example.ts.net`**, and its Tailscale IPv4 address is
@@ -42,8 +42,8 @@ from matching grants add together; adding a narrower grant does not remove an ol
 Who may message `openai/dot` is expressed in ordinary `to` lists on grants to the
 Relay: name `"openai/dot"`, or use `"*"` to include it. Local agents on the Relay use
 the owner-only baf socket and can already send to it, like any local inbox; they
-share the node's trust. Messages from other machines are still refused in this
-version, even if their grants name `openai/dot`. Cross-machine routing is a later job.
+share the node's trust. Messages from other machines go through the Relay, as described
+in **Door agents ↔ other machines** below.
 The Relay's `to` list never expands what a Door agent's own `door` entry permits.
 
 Allow the owner's devices to reach the sign-in port. For example, add to `grants`:
@@ -193,7 +193,8 @@ baf read --as me <message-id>
 ```
 
 The Principal should be `openai/dot`. `me` and `imac/me` mean the same destination
-in this example. A destination on another machine gets a clear refusal.
+in this example. A destination on another machine is checked by that machine against
+the Relay's grant toward it, as described below.
 
 Ask the Dot to **request** an answer from `codex`. It gets a receipt immediately; when
 Codex's run finishes, the Result appears in the Dot's **inbox**. **status** reports
@@ -364,3 +365,90 @@ requests without sessions or an SSE stream; `events/list` advertises `message.cr
 with webhook delivery. Unknown public paths return an empty 404. Protocol mistakes
 use JSON-RPC errors; mailbox refusals use tool results with `isError` and the mailbox's
 plain reason.
+
+## Door agents ↔ other machines
+
+Upgrade baf on both the Relay and the receiving machine before trying forwarding.
+The Relay sends a Dot's message to `grokbot/tokdev` with `origin: "openai/dot"`.
+Grokbot asks WhoIs about the connecting Relay and checks the Dot's `door` list in
+that grant. The Relay cannot read its own grant toward grokbot, so it queues the
+message and lets grokbot decide. A broad `to: ["*"]` for the iMac does not expand
+the Dot's permissions.
+
+Use these grants, keeping the rest of your policy. Here `imac` and `macbook` are
+existing policy aliases; use your own aliases or Tailscale addresses:
+
+```jsonc
+// Which agents on the Relay the Dot may message.
+{"src": ["imac"], "dst": ["imac"], "ip": ["tcp:7780"],
+ "app": {"github.com/DavidGuooo/baf/msg": [{"relay": true, "door": {"openai/dot": ["codex", "claude", "me"]}}]}},
+// The Relay may forward for this Dot to tokdev on grokbot.
+{"src": ["imac"], "dst": ["tag:grokbot"], "ip": ["tcp:7780"],
+ "app": {"github.com/DavidGuooo/baf/msg": [{"relay": true, "door": {"openai/dot": ["tokdev"]}}]}},
+// Grok bots may send to the Dot held by the Relay.
+{"src": ["tag:grokbot"], "dst": ["imac", "macbook"], "ip": ["tcp:7780"],
+ "app": {"github.com/DavidGuooo/baf/msg": [{"to": ["codex", "claude", "openai/dot"]}]}},
+```
+
+The existing members → `autogroup:self` and members → `tag:grokbot` grants with
+`to: ["*"]` may remain. Grants add together, but only `door` lists in grants with
+`relay: true` authorize a forwarded Door agent. A receiver rejects an `origin`
+from a node without that permission, an unlisted Door agent, or an origin whose
+vendor is a tailnet machine. The Relay vouches only for Door agents.
+
+Each node finds the Relay by asking WhoIs about the tailnet nodes, including itself:
+the one whose grants toward this node include `relay: true` is its Relay. Discovery
+is cached for one minute and refreshed before retrying a failed push to the Relay.
+No Relay, or more than one, gives a clear refusal when sending. No Relay address is
+configured in baf. Make the Relay's grant apply toward every node that needs it.
+
+A send to `openai/dot` on grokbot keeps that address in the message and queues it for
+the Relay. The Relay accepts only Door agents named in its own grant, and only when
+the pushing node's `to` list names the full address `openai/dot` or `*`. A `to` entry
+of just `dot` does not allow this. Other unknown names are refused by the Relay.
+The Relay's receipt means it has durably taken responsibility for the mail.
+
+For a Dot sending to grokbot, the Relay holds the outgoing mail, retries, and rings
+Bridge with `openai/dot` as the sender in both `from` fields. Rejection or the normal
+24-hour handover limit puts a failure Notice in the Dot's inbox and fires its event.
+The Relay rings a node only if it has a doorbell configured for that node; grokbot
+needs no doorbell key for the Relay.
+
+To try both directions after adding the grants and configuring Bridge's doorbell
+on the Relay (see [Grok setup](setup-grokbot.md)):
+
+1. Ask the Dot to watch `message.created`, then use `request` to ask
+   `grokbot/tokdev` a question. Keep the receipt's id. Its `status` tool shows
+   handover, then grokbot's progress; for these inbox-only bots, progress says
+   whether the message was opened.
+2. On grokbot, read the request and answer it:
+
+   ```bash
+   baf read --as tokdev <request-id>
+   baf send openai/dot --as tokdev --kind result --reply-to <request-id> "the answer"
+   baf flush --as tokdev
+   ```
+
+   If the request has a `from_thread`, include `--to-thread <from_thread>` in the
+   answer. The Dot receives an event and its request's `status` names the Result.
+   `baf status <result-id>` on grokbot shows handover to the Relay and whether the
+   Dot opened the Result. `baf outbox --all` keeps `openai/dot` as the destination
+   and shows the Relay in `VIA`.
+3. On grokbot, send a request the other way:
+
+   ```bash
+   baf send openai/dot --as tokdev --kind request "a question for the Dot"
+   baf flush --as tokdev
+   ```
+
+   Ask the Dot to use `reply` with that request's id. Its Result goes back through
+   the Relay to `grokbot/tokdev`; `baf status <request-id>` on grokbot names it.
+4. Ask the Dot to send to `grokbot/other`. With the grants above, grokbot refuses it
+   and the Dot receives a failure Notice. This verifies that the iMac's broad `to`
+   grant is not being used for the Dot.
+
+A Door agent can also send to another Door agent held by this same Relay if its
+local `door` list names the full destination, such as `openai/other`, or `*`.
+Files attached by tailnet agents reach the Door inbox under the same permission as
+the message; downloading or uploading file bytes through MCP remains unsupported.
+Outbox ids remain unique on each node: reusing another agent's id is refused.

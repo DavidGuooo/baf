@@ -68,11 +68,15 @@ type harness struct {
 }
 
 func newHarness(t *testing.T) *harness {
+	return newHarnessWithTransport(t, nil)
+}
+
+func newHarnessWithTransport(t *testing.T, tr mailbox.Transport) *harness {
 	t.Helper()
 	f := &fakeIdentity{login: "owner@example.com", node: "owners-phone"}
 	home := t.TempDir()
 	mb, err := mailbox.Open(mailbox.Options{
-		Path: filepath.Join(home, "mailbox.db"), Node: "relay",
+		Path: filepath.Join(home, "mailbox.db"), Node: "relay", Transport: tr,
 		Agents: map[string]agent.Adapter{"me": nil, "codex": nil, "claude": nil}, Door: f,
 	})
 	if err != nil {

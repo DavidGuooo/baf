@@ -181,8 +181,8 @@ func TestMCPNoticePrincipalAndPolicy(t *testing.T) {
 	}
 	for _, tc := range []struct{ to, reason string }{
 		{"claude", `its door entry in the Tailscale policy does not allow "claude"`},
-		{"other/codex", "Relay doesn't forward for Door agents yet"},
-		{"openai/other", "Relay doesn't forward for Door agents yet"},
+		{"other/codex", "this mailbox cannot send to other machines"},
+		{"openai/other", "door entry in the Tailscale policy"},
 	} {
 		wantToolError(t, h.call("openai/dot", tok.Access, "send",
 			map[string]any{"to": tc.to, "text": "no"}), tc.reason)

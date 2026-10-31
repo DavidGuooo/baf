@@ -68,6 +68,15 @@ Do this:
 4. Stop. If "messages" is empty, just stop.
 ```
 
+Messages may also come from a Door agent such as `openai/dot`. The Relay rings
+Bridge with that full address in both the top-level `from` and the message's `from`.
+The routine above needs no change: it uses each message's `from` when telling the
+bot where to answer. `baf send openai/dot ...` finds the Relay from the Tailscale
+policy and hands the answer to its Door inbox. Keep `baf flush` so the answer leaves
+before grokbot pauses. Set up the grants in
+[Door agents ↔ other machines](public-door.md#door-agents--other-machines) first;
+`to` must name `openai/dot` (or `*`) on grokbot's grant toward the Relay.
+
 `baf wait` and `baf flush` each wait up to 10 minutes. grokbot pauses a few minutes after
 the last bot run ends, and nothing running inside it (baf included) keeps it awake, so these
 waits are what keep it up while a message that failed its first try is retried.

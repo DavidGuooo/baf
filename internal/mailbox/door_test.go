@@ -78,8 +78,8 @@ func TestFromDoorPermissionAndPrincipal(t *testing.T) {
 	}
 	for _, tc := range []struct{ to, reason string }{
 		{"box/claude", "door entry in the Tailscale policy"},
-		{"other-node/codex", "Relay doesn't forward for Door agents yet"},
-		{"openai/dot", "Relay doesn't forward for Door agents yet"},
+
+		{"openai/dot", "door entry in the Tailscale policy"},
 	} {
 		env.To = tc.to
 		_, err := mb.FromDoor("openai/dot", env)
@@ -269,8 +269,8 @@ func TestDoorMailIsScopedToItsPrincipal(t *testing.T) {
 	if _, err := mb.DoorRead("openai/other", env.ID); !errors.Is(err, ErrNotForYou) {
 		t.Fatalf("other Door agent read mail: %v", err)
 	}
-	if _, err := mb.Accept(envelope.Envelope{V: 1, ID: "tailnet", Kind: envelope.Notice, FromAgent: "me", To: "openai/dot"}, Principal{Node: "other-node", Agent: "me"}); err == nil {
-		t.Fatal("tailnet forwarding to Door agents is not part of this job")
+	if _, err := mb.Accept(envelope.Envelope{V: 1, ID: "tailnet", Kind: envelope.Notice, FromAgent: "me", To: "openai/dot"}, Principal{Node: "other-node", Agent: "me"}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -333,5 +333,35 @@ func TestDoorRequestRecoveredAfterCrash(t *testing.T) {
 	}
 	if claims, err := mb.claim(); err != nil || len(claims) != 0 {
 		t.Fatalf("recovery repeated a run: %+v, %v", claims, err)
+	}
+}
+
+func TestForwardingNodeSurvivesRestart(t *testing.T) {
+	mb, _, tr := doorMailbox(t, true)
+	path := filepath.Join(filepath.Dir(mb.filesDir), "mailbox.db")
+	env := envelope.Envelope{V: 1, ID: "forwarded", Kind: envelope.Notice, FromAgent: "dot", Origin: "openai/dot", To: "box/me"}
+	from := Principal{Node: "openai", Agent: "dot"}
+	if _, err := mb.AcceptForwarded(env, from, "relay"); err != nil {
+		t.Fatal(err)
+	}
+	// A duplicate cannot transfer progress ownership to a different Relay.
+	if _, err := mb.AcceptForwarded(env, from, "another"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(Options{Path: path, Node: "box", Agents: map[string]agent.Adapter{"me": nil}, Transport: tr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if p, err := reopened.ForwardedProgress("relay", "openai/dot", env.ID); err != nil || p.Origin != "openai/dot" {
+		t.Fatalf("progress = %+v, %v", p, err)
+	}
+	for _, relay := range []string{"another", "plain"} {
+		if _, err := reopened.ForwardedProgress(relay, "openai/dot", env.ID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("progress leaked to %s: %v", relay, err)
+		}
 	}
 }

@@ -26,14 +26,15 @@ type Transport interface {
 	// Known returns an error if there is no machine called node to send to.
 	Known(ctx context.Context, node string) error
 
-	// Progress asks node's mailbox about message id, which this node handed
-	// to it (ADR-0006).
-	Progress(ctx context.Context, node, id string) (Progress, error)
+	// Progress asks about a message we handed over. Origin scopes a Door
+	// agent's id; it is empty for this node's own agents (ADR-0006).
+	Progress(ctx context.Context, node, id, origin string) (Progress, error)
 
 	// PutFile hands the bytes of f to node's mailbox ahead of a message to
-	// toAgent that names f (ADR-0007). A *Rejection means the receiver
-	// refused the file for good; any other error means try again later.
-	PutFile(ctx context.Context, node, toAgent string, f envelope.File, body io.Reader) error
+	// to that names f, with the same origin as the push (ADR-0007).
+	// A *Rejection means the receiver refused the file for good; any other
+	// error means try again later.
+	PutFile(ctx context.Context, node, to, origin string, f envelope.File, body io.Reader) error
 }
 
 // Doorbell wakes another node's agents so they look at their mailbox, for
@@ -56,8 +57,16 @@ const pushTimeout = 25 * time.Second
 // twice queues it once.
 func (m *Mailbox) enqueueTx(tx *sql.Tx, env envelope.Envelope, to envelope.Address) (Receipt, error) {
 	var created int64
-	err := tx.QueryRow(`SELECT created_at FROM outbox WHERE id = ?`, env.ID).Scan(&created)
+	var rawOld []byte
+	err := tx.QueryRow(`SELECT created_at, envelope FROM outbox WHERE id = ?`, env.ID).Scan(&created, &rawOld)
 	if err == nil {
+		var old envelope.Envelope
+		if err := json.Unmarshal(rawOld, &old); err != nil {
+			return Receipt{}, err
+		}
+		if old.Origin != env.Origin || old.FromAgent != env.FromAgent {
+			return Receipt{}, reject("message id %q is already used by another agent; choose a new id", env.ID)
+		}
 		return Receipt{ID: env.ID, StoredAt: time.UnixMilli(created), Duplicate: true, Queued: true}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -80,7 +89,11 @@ func (m *Mailbox) enqueueTx(tx *sql.Tx, env envelope.Envelope, to envelope.Addre
 // queueKey names the queue a message waits in. Messages from one sender's
 // thread to one receiver are handed over strictly in order.
 func queueKey(env envelope.Envelope) string {
-	return env.To + "\x00" + env.FromAgent + "\x00" + env.FromThread
+	sender := env.FromAgent
+	if env.Origin != "" {
+		sender = env.Origin
+	}
+	return env.To + "\x00" + sender + "\x00" + env.FromThread
 }
 
 // outgoing is a message waiting in the outbox.
@@ -181,26 +194,7 @@ func (m *Mailbox) outboxHeads() ([]outgoing, error) {
 
 // handover makes one attempt to hand o to its node and records the result.
 func (m *Mailbox) handover(ctx context.Context, o outgoing) {
-	// Ring first: the ring may be what brings a sleeping node back online.
-	// Only the first attempt rings, unless no ring has got through yet.
-	if !o.rung && m.doorbell != nil {
-		err := m.doorbell.Ring(ctx, o.node, o.env)
-		switch {
-		case err == nil, errors.Is(err, ErrNoDoorbell):
-			o.rung = true
-		default:
-			slog.Warn("doorbell did not ring", "node", o.node, "message", o.env.ID, "err", err)
-		}
-	}
-
-	// The files go first: the receiver stores the message only once it holds
-	// every file the message names (ADR-0007).
-	notice, err := m.handOverFiles(ctx, o)
-	if err == nil {
-		pctx, cancel := context.WithTimeout(ctx, pushTimeout)
-		_, err = m.transport.Push(pctx, o.node, o.env)
-		cancel()
-	}
+	notice, err := m.attemptHandover(ctx, &o)
 	if ctx.Err() != nil {
 		return // baf is stopping; this attempt doesn't count
 	}
@@ -242,12 +236,55 @@ func (m *Mailbox) handover(ctx context.Context, o outgoing) {
 	}
 }
 
+// attemptHandover refreshes the Relay route after a failed attempt, keeping
+// the destination in the envelope and the node in the outbox separate.
+func (m *Mailbox) attemptHandover(ctx context.Context, o *outgoing) (string, error) {
+	to, _ := envelope.ParseAddress(o.env.To)
+	if o.node != to.Node {
+		rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		node, err := m.relay(rctx, o.attempts > 0)
+		cancel()
+		if err != nil {
+			return "", fmt.Errorf("finding the Relay for %s: %w", o.env.To, err)
+		}
+		if node != o.node {
+			o.node, o.rung = node, false
+			if err := m.inTx(func(tx *sql.Tx) error {
+				_, err := tx.Exec(`UPDATE outbox SET to_node = ?, rung = 0 WHERE seq = ?`, node, o.seq)
+				return err
+			}); err != nil {
+				return "", err
+			}
+		}
+	}
+	// Ring first: the ring may be what brings a sleeping node back online.
+	// Only the first attempt rings, unless no ring has got through yet.
+	if !o.rung && m.doorbell != nil {
+		err := m.doorbell.Ring(ctx, o.node, o.env)
+		switch {
+		case err == nil, errors.Is(err, ErrNoDoorbell):
+			o.rung = true
+		default:
+			slog.Warn("doorbell did not ring", "node", o.node, "message", o.env.ID, "err", err)
+		}
+	}
+
+	// The files go first: the receiver stores the message only once it holds
+	// every file the message names (ADR-0007).
+	notice, err := m.handOverFiles(ctx, *o)
+	if err == nil {
+		pctx, cancel := context.WithTimeout(ctx, pushTimeout)
+		_, err = m.transport.Push(pctx, o.node, o.env)
+		cancel()
+	}
+	return notice, err
+}
+
 // handOverFiles hands the receiver the bytes of each file o names, once per
 // hash. It returns a *Rejection when o can never go, because the receiver
 // refused a file or a file's bytes are gone from this machine, with the text
 // of the sender's failure notice. Any other error means try again later.
 func (m *Mailbox) handOverFiles(ctx context.Context, o outgoing) (notice string, err error) {
-	to, _ := envelope.ParseAddress(o.env.To)
 	sent := map[string]bool{}
 	for _, f := range o.env.Body.Files {
 		if sent[f.SHA256] {
@@ -266,7 +303,7 @@ func (m *Mailbox) handOverFiles(ctx context.Context, o outgoing) (notice string,
 		// Allow for a slow link: ten seconds per started MB (100 KB/s) on top of a
 		// push's time. Tailscale's DERP relays carried about 300 KB/s to grokbot.
 		fctx, cancel := context.WithTimeout(ctx, pushTimeout+time.Duration((f.Size+999_999)/1_000_000)*10*time.Second)
-		err = m.transport.PutFile(fctx, o.node, to.Agent, f, file)
+		err = m.transport.PutFile(fctx, o.node, o.env.To, o.env.Origin, f, file)
 		cancel()
 		file.Close()
 		var rej *Rejection
@@ -365,7 +402,14 @@ func (m *Mailbox) failureNoticeTx(tx *sql.Tx, orig envelope.Envelope, text strin
 		ToThread:  orig.FromThread,
 		Body:      envelope.Body{Text: text + "\n--- your original message ---\n" + truncate(orig.Body.Text, 2000)},
 	}
-	if _, err := m.storeTx(tx, n, Principal{Node: m.node, Agent: SystemAgent}, false); err != nil {
+	var err error
+	if orig.Origin != "" {
+		n.To = orig.Origin
+		_, err = m.storeInboxTx(tx, n, Principal{Node: m.node, Agent: SystemAgent}, n.To, nil, false)
+	} else {
+		_, err = m.storeTx(tx, n, Principal{Node: m.node, Agent: SystemAgent}, false)
+	}
+	if err != nil {
 		// The sending agent no longer exists here; nobody to tell.
 		slog.Error("deliver failure notice", "to", n.To, "err", err)
 	}
@@ -378,6 +422,8 @@ type OutItem struct {
 	To        string     `json:"to"`
 	Kind      string     `json:"kind"`
 	FromAgent string     `json:"from_agent"`
+	Origin    string     `json:"origin,omitempty"`
+	Via       string     `json:"via,omitempty"`
 	State     string     `json:"state"` // waiting | handed | failed
 	Attempts  int        `json:"attempts"`
 	LastError string     `json:"last_error,omitempty"`
@@ -387,7 +433,7 @@ type OutItem struct {
 	DoneAt    *time.Time `json:"done_at,omitempty"` // when it was handed over, or failed
 }
 
-const outItemColumns = `envelope, state, attempts, last_error, created_at, next_try_at, expires_at, done_at`
+const outItemColumns = `to_node, envelope, state, attempts, last_error, created_at, next_try_at, expires_at, done_at`
 
 // scanOutItem reads one outbox row selected with outItemColumns.
 func scanOutItem(s scanner) (OutItem, envelope.Envelope, error) {
@@ -398,13 +444,14 @@ func scanOutItem(s scanner) (OutItem, envelope.Envelope, error) {
 		created, next, expires int64
 		done                   sql.NullInt64
 	)
-	if err := s.Scan(&raw, &it.State, &it.Attempts, &it.LastError, &created, &next, &expires, &done); err != nil {
+	if err := s.Scan(&it.Via, &raw, &it.State, &it.Attempts, &it.LastError, &created, &next, &expires, &done); err != nil {
 		return OutItem{}, env, err
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return OutItem{}, env, err
 	}
 	it.ID, it.To, it.Kind, it.FromAgent = env.ID, env.To, string(env.Kind), env.FromAgent
+	it.Origin = env.Origin
 	it.CreatedAt, it.NextTry, it.ExpiresAt = time.UnixMilli(created), time.UnixMilli(next), time.UnixMilli(expires)
 	it.DoneAt = timePtr(done)
 	return it, env, nil
