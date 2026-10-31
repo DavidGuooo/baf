@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -61,11 +62,27 @@ type Envelope struct {
 	Body    Body   `json:"body"`
 }
 
-// Body is the message content. Files are not supported yet.
+// Body is the message content.
 type Body struct {
 	Text  string      `json:"text"`
+	Files []File      `json:"files,omitempty"` // their bytes travel ahead of the message (ADR-0007)
 	State ResultState `json:"state,omitempty"` // only on a Result
 }
+
+// File names one file sent with a message. The envelope carries only its
+// name, hash and size; the sending mailbox hands the bytes over first, and
+// the receiver checks them against SHA256 (ADR-0007).
+type File struct {
+	Name   string `json:"name"`   // a plain file name, no directories
+	SHA256 string `json:"sha256"` // 64 lowercase hex digits
+	Size   int64  `json:"size"`   // bytes
+}
+
+// Limits every mailbox applies to files, sending and receiving alike.
+const (
+	MaxFiles    = 20        // per message
+	MaxFileSize = 100 << 20 // bytes, per file
+)
 
 // NewID returns a new ULID: unique, and sortable by creation time.
 func NewID() string {
@@ -77,8 +94,8 @@ func (e *Envelope) Validate() error {
 	if e.V != Version {
 		return fmt.Errorf("unsupported envelope version %d", e.V)
 	}
-	if e.ID == "" {
-		return errors.New("missing id")
+	if err := checkID(e.ID); err != nil {
+		return err
 	}
 	switch e.Kind {
 	case Notice, Request:
@@ -99,6 +116,80 @@ func (e *Envelope) Validate() error {
 	}
 	if err := checkName(e.FromAgent); err != nil {
 		return fmt.Errorf("bad from_agent: %w", err)
+	}
+	return checkFiles(e.Body.Files)
+}
+
+func checkFiles(files []File) error {
+	if len(files) > MaxFiles {
+		return fmt.Errorf("%d files; a message may carry at most %d", len(files), MaxFiles)
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		if err := CheckFileName(f.Name); err != nil {
+			return err
+		}
+		// Case-insensitive file systems (macOS) would put both in one file.
+		key := strings.ToLower(f.Name)
+		if seen[key] {
+			return fmt.Errorf("two files named %q", f.Name)
+		}
+		seen[key] = true
+		if !isSHA256(f.SHA256) {
+			return fmt.Errorf("file %q: sha256 must be 64 lowercase hex digits", f.Name)
+		}
+		if f.Size < 0 || f.Size > MaxFileSize {
+			return fmt.Errorf("file %q is %d bytes; the limit is %d MB", f.Name, f.Size, MaxFileSize>>20)
+		}
+	}
+	return nil
+}
+
+// CheckFileName accepts a plain file name that is safe to create inside a
+// directory of its own: no directories, no control characters.
+func CheckFileName(name string) error {
+	switch {
+	case name == "" || name == "." || name == "..":
+		return fmt.Errorf("bad file name %q", name)
+	case len(name) > 255:
+		return fmt.Errorf("file name %q… is longer than 255 bytes", name[:40])
+	case !utf8.ValidString(name):
+		return fmt.Errorf("file name %q is not valid UTF-8", name)
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || r < 0x20 || r == 0x7f {
+			return fmt.Errorf("file name %q must be a plain name, without / \\ or control characters", name)
+		}
+	}
+	return nil
+}
+
+func isSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// checkID accepts the ids baf makes (ULIDs) and others of the same safe
+// shape. An id also names a directory of received files, so it may hold
+// only letters, digits, - and _.
+func checkID(id string) error {
+	if id == "" {
+		return errors.New("missing id")
+	}
+	if len(id) > 64 {
+		return fmt.Errorf("id %q… is longer than 64 characters", id[:20])
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return fmt.Errorf("id %q: use letters, digits, - and _", id)
+		}
 	}
 	return nil
 }

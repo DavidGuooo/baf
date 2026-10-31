@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -52,6 +53,12 @@ func (c *Client) Send(env envelope.Envelope) (mailbox.Receipt, error) {
 	return r, c.do("POST", "/v1/send", env, &r)
 }
 
+func (c *Client) AddFile(name string, r io.Reader) (envelope.File, error) {
+	var f envelope.File
+	err := c.doBody("POST", "/v1/files?"+url.Values{"name": {name}}.Encode(), r, &f)
+	return f, err
+}
+
 func (c *Client) Inbox(agentName string, all bool) ([]mailbox.Item, error) {
 	q := url.Values{"agent": {agentName}}
 	if all {
@@ -93,7 +100,11 @@ func (c *Client) do(method, path string, in, out any) error {
 			return err
 		}
 	}
-	req, err := http.NewRequest(method, "http://baf"+path, &body)
+	return c.doBody(method, path, &body, out)
+}
+
+func (c *Client) doBody(method, path string, body io.Reader, out any) error {
+	req, err := http.NewRequest(method, "http://baf"+path, body)
 	if err != nil {
 		return err
 	}

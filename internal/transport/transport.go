@@ -40,6 +40,12 @@ type pushResponse struct {
 	Rejected bool             `json:"rejected,omitempty"` // final: don't retry
 }
 
+type fileResponse struct {
+	Stored   bool   `json:"stored,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Rejected bool   `json:"rejected,omitempty"`
+}
+
 // progressResponse is the body of every answer to a progress question.
 type progressResponse struct {
 	Progress *mailbox.Progress `json:"progress,omitempty"`
@@ -47,7 +53,7 @@ type progressResponse struct {
 }
 
 // Handler serves POST /v1/push, where other mailboxes hand over messages,
-// and GET /v1/progress/{id}, where they ask about one they handed over.
+// PUT /v1/files/{sha256}, and GET /v1/progress/{id}.
 func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/push", func(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +96,46 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 			reply(w, http.StatusInternalServerError, pushResponse{Error: "could not store the message"})
 		default:
 			reply(w, http.StatusOK, pushResponse{Receipt: &receipt})
+		}
+	})
+
+	mux.HandleFunc("PUT /v1/files/{sha256}", func(w http.ResponseWriter, r *http.Request) {
+		peer, err := id.WhoIs(r.Context(), r.RemoteAddr)
+		if err != nil {
+			reply(w, http.StatusForbidden, fileResponse{Error: "unknown caller", Rejected: true})
+			return
+		}
+		to, err := envelope.ParseAddress(mb.Node() + "/" + r.URL.Query().Get("to"))
+		if err != nil {
+			reply(w, http.StatusBadRequest, fileResponse{Error: "bad to: " + err.Error(), Rejected: true})
+			return
+		}
+		if !peer.MayMessage(to.Agent) {
+			reason := fmt.Sprintf("%s may not message %s: no %s grant with \"to\" naming %q in the Tailscale policy",
+				peer.Node, mb.Node()+"/"+to.Agent, tailnet.Capability, to.Agent)
+			reply(w, http.StatusForbidden, fileResponse{Error: reason, Rejected: true})
+			return
+		}
+		if r.ContentLength < 0 || (r.ContentLength == 0 && r.Header.Get("Content-Length") == "") {
+			reply(w, http.StatusLengthRequired, fileResponse{Error: "file upload needs Content-Length", Rejected: true})
+			return
+		}
+		if r.ContentLength > envelope.MaxFileSize {
+			reply(w, http.StatusRequestEntityTooLarge, fileResponse{Error: "file exceeds the size limit", Rejected: true})
+			return
+		}
+		f := envelope.File{Name: "upload", SHA256: r.PathValue("sha256"), Size: r.ContentLength}
+		err = mb.StoreFile(f, http.MaxBytesReader(w, r.Body, f.Size+1))
+		var rej *mailbox.Rejection
+		switch {
+		case errors.As(err, &rej):
+			reply(w, http.StatusUnprocessableEntity, fileResponse{Error: rej.Reason, Rejected: true})
+		case err != nil:
+			slog.Error("store uploaded file", "sha256", f.SHA256, "err", err)
+			reply(w, http.StatusInternalServerError, fileResponse{Error: "could not store the file"})
+		default:
+			slog.Info("file received", "from_node", peer.Node, "sha256", f.SHA256, "size", f.Size)
+			reply(w, http.StatusOK, fileResponse{Stored: true})
 		}
 	})
 
@@ -218,6 +264,42 @@ func (c *Client) Progress(ctx context.Context, node, id string) (mailbox.Progres
 		return mailbox.Progress{}, errors.New(pr.Error) // written to be read as it is
 	default:
 		return mailbox.Progress{}, fmt.Errorf("%s answered %s", node, resp.Status)
+	}
+}
+
+func (c *Client) PutFile(ctx context.Context, node, toAgent string, f envelope.File, body io.Reader) error {
+	addr, _, err := c.Lookup(ctx, node)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "PUT", c.url(addr, "/v1/files/"+f.SHA256+"?to="+url.QueryEscape(toAgent)), body)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = f.Size
+	// A zero-length reader otherwise becomes an upload of unknown length.
+	if f.Size == 0 {
+		req.Body = http.NoBody
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var fr fileResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&fr); err != nil {
+		if resp.StatusCode == http.StatusNotFound {
+			return &mailbox.Rejection{Reason: fmt.Sprintf("%s runs an older baf that can't receive files; update it there", node)}
+		}
+		return fmt.Errorf("%s answered %s with an unreadable body", node, resp.Status)
+	}
+	switch {
+	case resp.StatusCode == http.StatusOK && fr.Stored:
+		return nil
+	case fr.Rejected:
+		return &mailbox.Rejection{Reason: fr.Error}
+	default:
+		return fmt.Errorf("%s answered %s: %s", node, resp.Status, fr.Error)
 	}
 }
 

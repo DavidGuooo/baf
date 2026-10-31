@@ -42,6 +42,9 @@ The answer to a Request (completed, failed, rejected or unknown), naming the req
 Proof that a Mailbox durably stored a message, and nothing more.
 _Avoid_: "delivered" meaning "done"
 
+**File**:
+Bytes sent with a message. The message names each file by name, SHA-256 and size; the sending Mailbox hands the bytes over first, and the receiver stores the message only once it holds them all.
+
 **Progress**:
 What the receiving Mailbox can tell the sender about a message it stored: its run has not started, is running (and what the agent last started doing, read from the agent's own output), or is done. For an agent baf doesn't run, it says whether the message was opened. The sender's mailbox asks for it, only the sending node may ask, and it is never a message.
 _Avoid_: progress message, status update

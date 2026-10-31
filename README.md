@@ -47,6 +47,15 @@ Continue the same Codex thread by passing the thread id the Result came from:
 
 `./baf runs` lists the agent runs and how they ended.
 
+Attach files with `--file` (repeatable; up to 20, 100 MB each):
+
+```bash
+./baf request codex --file report.pdf --file data.csv "Summarize these."
+```
+
+The agent's prompt lists where each file was saved on its machine, and `./baf read` shows the
+same paths (under `~/.baf/files/in/`).
+
 ## Other machines
 
 Address an agent on another machine as `node/agent`, using its Tailscale name:
@@ -58,7 +67,9 @@ Address an agent on another machine as `node/agent`, using its Tailscale name:
 
 The message waits in this machine's outbox until that machine's baf stores it, retrying for
 24 hours; then you get a notice saying delivery could not be confirmed. `./baf status <id>`
-works here too: it asks that machine's baf how the message is doing there. Who may message whom
+works here too: it asks that machine's baf how the message is doing there. Files go to the
+other machine's baf ahead of the message, which it stores only once every file has arrived
+intact. Who may message whom
 is set only in your Tailscale policy: paste [`deploy/tailscale-policy.hujson`](deploy/tailscale-policy.hujson)
 into it. Without a matching grant, the receiver refuses the message and the sender gets a
 notice saying why.

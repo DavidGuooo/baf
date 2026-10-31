@@ -24,6 +24,16 @@ type Job struct {
 	// Env is extra environment for the agent's process (BAF_AGENT and so on),
 	// so the agent can call `baf send` itself.
 	Env []string
+
+	// Files are the message's files, already on this machine (ADR-0007).
+	Files []File
+}
+
+// File is one of a message's files as the agent gets it: a path it can read.
+type File struct {
+	Name string
+	Size int64
+	Path string
 }
 
 // Outcome is how a run ended.
@@ -116,6 +126,12 @@ func Prompt(job Job) string {
 		fmt.Fprintf(&b, "To message them yourself: baf send %s --to-thread %s \"text\"\n", job.Sender, m.FromThread)
 	} else {
 		fmt.Fprintf(&b, "To message them yourself: baf send %s \"text\"\n", job.Sender)
+	}
+	if len(job.Files) > 0 {
+		b.WriteString("Files sent with it (saved on this machine):\n")
+		for _, f := range job.Files {
+			fmt.Fprintf(&b, "- %s (%d bytes): %s\n", f.Name, f.Size, f.Path)
+		}
 	}
 	b.WriteString("--- message ---\n")
 	b.WriteString(m.Body.Text)

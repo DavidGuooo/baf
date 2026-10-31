@@ -255,3 +255,15 @@ func TestClaudeWithoutResultFails(t *testing.T) {
 		t.Fatalf("outcome = %+v", out)
 	}
 }
+
+func TestPromptListsFilesBeforeMessage(t *testing.T) {
+	job := testJob("")
+	if strings.Contains(Prompt(job), "Files sent with it") {
+		t.Fatal("empty file list shown")
+	}
+	job.Files = []File{{Name: "report.pdf", Size: 12345, Path: "/full/path/report.pdf"}, {Name: "empty", Path: "/full/path/empty"}}
+	want := "To message them yourself: baf send box/me --to-thread mine \"text\"\nFiles sent with it (saved on this machine):\n- report.pdf (12345 bytes): /full/path/report.pdf\n- empty (0 bytes): /full/path/empty\n--- message ---\nsay ok"
+	if !strings.Contains(Prompt(job), want) {
+		t.Fatalf("prompt = %s", Prompt(job))
+	}
+}

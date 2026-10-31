@@ -37,6 +37,19 @@ func Handler(mb *mailbox.Mailbox, agents []string) http.Handler {
 		writeJSON(w, http.StatusOK, Status{Node: mb.Node(), Agents: sorted})
 	})
 
+	mux.HandleFunc("POST /v1/files", func(w http.ResponseWriter, r *http.Request) {
+		f, err := mb.AddFile(r.URL.Query().Get("name"), http.MaxBytesReader(w, r.Body, envelope.MaxFileSize+1))
+		var rej *mailbox.Rejection
+		switch {
+		case errors.As(err, &rej):
+			writeJSON(w, http.StatusUnprocessableEntity, apiError{Error: rej.Reason, Rejected: true})
+		case err != nil:
+			writeJSON(w, http.StatusInternalServerError, apiError{Error: err.Error()})
+		default:
+			writeJSON(w, http.StatusOK, f)
+		}
+	})
+
 	mux.HandleFunc("POST /v1/send", func(w http.ResponseWriter, r *http.Request) {
 		var env envelope.Envelope
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&env); err != nil {

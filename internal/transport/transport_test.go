@@ -2,12 +2,14 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -56,6 +58,7 @@ type nodeOpts struct {
 	agents   map[string]agent.Adapter
 	giveUp   time.Duration
 	doorbell mailbox.Doorbell
+	wrap     func(http.Handler) http.Handler
 }
 
 func newNet(t *testing.T) *net2 {
@@ -107,7 +110,11 @@ func (n *net2) add(name string, ip string, o nodeOpts) *node {
 		t.Fatal(err)
 	}
 	nd.mb = mb
-	nd.srv = httptest.NewServer(Handler(mb, nd.identity))
+	h := Handler(mb, nd.identity)
+	if o.wrap != nil {
+		h = o.wrap(h)
+	}
+	nd.srv = httptest.NewServer(h)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -429,5 +436,198 @@ func TestOlderReceiverCantReportProgress(t *testing.T) {
 	_, err := c.Progress(context.Background(), "grokbot", "01X")
 	if err == nil || !strings.Contains(err.Error(), "grokbot runs an older baf") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func addFile(t *testing.T, nd *node, name, contents string) envelope.File {
+	t.Helper()
+	f, err := nd.mb.AddFile(name, strings.NewReader(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func TestFilesAcrossNodes(t *testing.T) {
+	for _, sleeping := range []bool{false, true} {
+		name := "awake"
+		if sleeping {
+			name = "asleep"
+		}
+		t.Run(name, func(t *testing.T) {
+			n := newNet(t)
+			var uploads atomic.Int32
+			imac := n.add("imac", "100.64.0.1", nodeOpts{agents: map[string]agent.Adapter{"me": nil}, wrap: func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if strings.HasPrefix(r.URL.Path, "/v1/files/") {
+						uploads.Add(1)
+					}
+					next.ServeHTTP(w, r)
+				})
+			}})
+			grok := n.add("grok", "100.64.0.2", nodeOpts{agents: map[string]agent.Adapter{"tokdev": nil}})
+			imac.callerIs("grok", tailnet.Grant{To: []string{"me"}})
+			files := []envelope.File{addFile(t, grok, "report.pdf", "report bytes"), addFile(t, grok, "empty.txt", "")}
+			// Two names may refer to the same bytes, but each hash travels only once.
+			alias := files[0]
+			alias.Name = "report-copy.pdf"
+			files = append(files, alias)
+			imac.up.Store(!sleeping)
+			send := func() {
+				grok.send(t, envelope.Envelope{Kind: envelope.Notice, To: "imac/me", FromAgent: "tokdev", Body: envelope.Body{Text: "files", Files: files}})
+			}
+			send()
+			if sleeping {
+				waitFor(t, "file retries", func() bool {
+					out, _ := grok.mb.Outbox(false, 10)
+					return len(out) == 1 && out[0].Attempts >= 2 && strings.Contains(out[0].LastError, "handing over report.pdf")
+				})
+				if len(inbox(t, imac, "me")) != 0 {
+					t.Fatal("message arrived while asleep")
+				}
+				imac.up.Store(true)
+			}
+			waitFor(t, "files and notice", func() bool { return len(inbox(t, imac, "me")) == 1 })
+			send()
+			waitFor(t, "reused files", func() bool { return len(inbox(t, imac, "me")) == 2 })
+			for _, item := range inbox(t, imac, "me") {
+				if len(item.Files) != len(files) {
+					t.Fatalf("files = %+v", item.Files)
+				}
+				for i, f := range item.Files {
+					b, err := os.ReadFile(f.Path)
+					want := "report bytes"
+					if i == 1 {
+						want = ""
+					}
+					if err != nil || string(b) != want || f.File != files[i] {
+						t.Fatalf("file = %+v, bytes = %q, err = %v", f, b, err)
+					}
+				}
+			}
+			if uploads.Load() != 4 {
+				t.Fatalf("uploads = %d, want 4", uploads.Load())
+			}
+		})
+	}
+}
+
+func TestRequestWithReadableFiles(t *testing.T) {
+	n := newNet(t)
+	worker := agent.Func(func(_ context.Context, job agent.Job, report agent.Report) agent.Outcome {
+		if len(job.Files) != 1 {
+			return agent.Outcome{State: envelope.Failed, Text: "missing file"}
+		}
+		b, err := os.ReadFile(job.Files[0].Path)
+		if err != nil {
+			return agent.Outcome{State: envelope.Failed, Text: err.Error()}
+		}
+		report.Thread("codex-thread")
+		return agent.Outcome{State: envelope.Completed, Text: "echo: " + string(b), ThreadID: "codex-thread"}
+	})
+	imac := n.add("imac", "100.64.0.1", nodeOpts{agents: map[string]agent.Adapter{"codex": worker}})
+	grok := n.add("grok", "100.64.0.2", nodeOpts{agents: map[string]agent.Adapter{"tokdev": nil}})
+	imac.callerIs("grok", tailnet.Grant{To: []string{"codex"}})
+	grok.callerIs("imac", tailnet.Grant{To: []string{"tokdev"}})
+	f := addFile(t, grok, "report.pdf", "hello from file")
+	r := grok.send(t, envelope.Envelope{Kind: envelope.Request, To: "imac/codex", FromAgent: "tokdev", Body: envelope.Body{Text: "read", Files: []envelope.File{f}}})
+	waitFor(t, "file result", func() bool { return len(inbox(t, grok, "tokdev")) == 1 })
+	result := inbox(t, grok, "tokdev")[0].Message
+	if result.Kind != envelope.Result || result.ReplyTo != r.ID || result.Body.State != envelope.Completed || result.Body.Text != "echo: hello from file" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestFileRefusalNotice(t *testing.T) {
+	for _, older := range []bool{false, true} {
+		name := "no grant"
+		if older {
+			name = "older receiver"
+		}
+		t.Run(name, func(t *testing.T) {
+			n := newNet(t)
+			imac := n.add("imac", "100.64.0.1", nodeOpts{agents: map[string]agent.Adapter{"me": nil}, wrap: func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if older && strings.HasPrefix(r.URL.Path, "/v1/files/") {
+						http.NotFound(w, r)
+						return
+					}
+					next.ServeHTTP(w, r)
+				})
+			}})
+			grok := n.add("grok", "100.64.0.2", nodeOpts{agents: map[string]agent.Adapter{"tokdev": nil}})
+			imac.callerIs("grok", tailnet.Grant{To: []string{"codex"}})
+			if older {
+				imac.callerIs("grok", tailnet.Grant{To: []string{"me"}})
+			}
+			f := addFile(t, grok, "report.pdf", "report")
+			grok.send(t, envelope.Envelope{Kind: envelope.Notice, To: "imac/me", FromAgent: "tokdev", Body: envelope.Body{Text: "read", Files: []envelope.File{f}}})
+			waitFor(t, "file refusal", func() bool { return len(inbox(t, grok, "tokdev")) == 1 })
+			notice := inbox(t, grok, "tokdev")[0].Message
+			reason := "may not message imac/me"
+			if older {
+				reason = "imac runs an older baf that can't receive files; update it there"
+			}
+			if notice.Kind != envelope.Notice || !strings.Contains(notice.Body.Text, "refused file report.pdf") || !strings.Contains(notice.Body.Text, reason) {
+				t.Fatalf("notice = %+v", notice)
+			}
+			if len(inbox(t, imac, "me")) != 0 {
+				t.Fatal("refused message stored")
+			}
+			out, err := grok.mb.Outbox(true, 10)
+			if err != nil || len(out) != 1 || out[0].State != "failed" {
+				t.Fatalf("outbox = %+v, err = %v", out, err)
+			}
+		})
+	}
+}
+
+type unreadableBody struct{ read bool }
+
+func (b *unreadableBody) Read([]byte) (int, error) {
+	b.read = true
+	return 0, errors.New("must not read")
+}
+func (b *unreadableBody) Close() error { return nil }
+
+func TestFileHandlerChecks(t *testing.T) {
+	n := newNet(t)
+	imac := n.add("imac", "100.64.0.1", nodeOpts{agents: map[string]agent.Adapter{"me": nil}})
+	for _, tc := range []struct {
+		name   string
+		size   int64
+		grant  bool
+		to     string
+		code   int
+		noRead bool
+	}{
+		{"wrong hash", 3, true, "me", 422, false},
+		{"no grant", 3, false, "me", 403, true},
+		{"too large", envelope.MaxFileSize + 1, true, "me", 413, true},
+		{"unknown length", -1, true, "me", 411, true},
+		{"missing length", 0, true, "me", 411, true},
+		{"bad agent", 3, true, "bad/agent", 400, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			imac.callerIs("grok")
+			if tc.grant {
+				imac.callerIs("grok", tailnet.Grant{To: []string{"*"}})
+			}
+			req := httptest.NewRequest("PUT", "/v1/files/"+strings.Repeat("0", 64)+"?to="+tc.to, strings.NewReader("abc"))
+			req.ContentLength = tc.size
+			body := &unreadableBody{}
+			if tc.noRead {
+				req.Body = body
+			}
+			rec := httptest.NewRecorder()
+			Handler(imac.mb, imac.identity).ServeHTTP(rec, req)
+			var fr fileResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &fr); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != tc.code || !fr.Rejected || fr.Error == "" || body.read {
+				t.Fatalf("code=%d response=%+v read=%v", rec.Code, fr, body.read)
+			}
+		})
 	}
 }

@@ -3,8 +3,8 @@
 //
 //	baf serve                         run the mailbox (keep it running)
 //	baf start | stop                  run the mailbox in the background, or stop it
-//	baf send ADDR TEXT                send a notice (no answer expected)
-//	baf request ADDR TEXT             send a request (a Result comes back)
+//	baf send ADDR [TEXT]              send a notice (no answer expected)
+//	baf request ADDR [TEXT]           send a request (a Result comes back)
 //	baf inbox [--all]                 list unread messages
 //	baf read ID                       show one message and mark it read
 //	baf status ID                     follow a message you sent: handed over, running, answered
@@ -12,7 +12,8 @@
 //	baf runs                          list recent agent runs
 //	baf wait ID...                    for routine runs: wait for mail to arrive
 //
-// ADDR is node/agent, or just agent for an agent on this machine.
+// ADDR is node/agent, or just agent for an agent on this machine. send and
+// request take --file PATH (repeatable) to attach files; TEXT may then be left out.
 package main
 
 import (
@@ -24,6 +25,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -32,6 +34,7 @@ import (
 	"github.com/DavidGuooo/baf/internal/config"
 	"github.com/DavidGuooo/baf/internal/daemon"
 	"github.com/DavidGuooo/baf/internal/envelope"
+	"github.com/DavidGuooo/baf/internal/mailbox"
 	"github.com/DavidGuooo/baf/internal/tailnet"
 )
 
@@ -40,8 +43,8 @@ const usage = `baf: messages between your agents over Tailscale
 Usage:
   baf serve                      run the mailbox daemon in the foreground
   baf start | stop               run it in the background (log: ~/.baf/baf.log), or stop it
-  baf send ADDR TEXT...          send a notice (expects no answer)
-  baf request ADDR TEXT...       send a request (a Result comes back automatically)
+  baf send ADDR [TEXT...]        send a notice (expects no answer)
+  baf request ADDR [TEXT...]     send a request (a Result comes back automatically)
   baf inbox [--all]              list unread messages on this machine (--all: read ones too)
   baf read ID                    show one message and mark it read
   baf status ID                  follow a message you sent: handed over, running (and doing what), answered
@@ -49,9 +52,11 @@ Usage:
   baf runs [--limit N]           list recent agent runs
   baf wait [--as NAME] ID...     wait until these messages have arrived (default --timeout 2m)
 
-ADDR is node/agent, or just agent for one on this machine. TEXT "-" reads stdin.
+ADDR is node/agent, or just agent for one on this machine. TEXT "-" reads stdin;
+it may be left out when you attach files.
 
 Options for send and request:
+  --file PATH        attach a file (repeatable; up to 20, 100 MB each)
   --as NAME          send as this agent (default $BAF_AGENT, else "me")
   --to-thread ID     continue the receiver's thread with this id
   --from-thread ID   your own thread id (default $BAF_THREAD)
@@ -132,13 +137,20 @@ func send(args []string, kind envelope.Kind) error {
 	kindFlag := fs.String("kind", string(kind), "")
 	replyTo := fs.String("reply-to", "", "")
 	state := fs.String("state", "", "")
+	var paths filePaths
+	fs.Var(&paths, "file", "attach a file (repeatable; up to 20, 100 MB each)")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) < 2 {
-		return errors.New("usage: baf " + string(kind) + " ADDR TEXT...")
+	if len(pos) == 0 || (len(pos) < 2 && len(paths) == 0) {
+		return errors.New("usage: baf " + string(kind) + " ADDR [TEXT...] [--file PATH]...")
 	}
+	files, err := openFiles(paths)
+	if err != nil {
+		return err
+	}
+	defer closeFiles(files)
 	text := strings.Join(pos[1:], " ")
 	if text == "-" {
 		b, err := io.ReadAll(os.Stdin)
@@ -171,16 +183,26 @@ func send(args []string, kind envelope.Kind) error {
 		ReplyTo:    *replyTo,
 		Body:       envelope.Body{Text: text, State: resultState(envelope.Kind(*kindFlag), *state)},
 	}
+	for i, f := range files {
+		file, err := c.AddFile(filepath.Base(paths[i]), f)
+		if err != nil {
+			return fmt.Errorf("file %q: %w", paths[i], err)
+		}
+		env.Body.Files = append(env.Body.Files, file)
+	}
 	r, err := c.Send(env)
 	if err != nil {
 		return err
 	}
 	note := ""
+	if len(files) > 0 {
+		note = " (" + fileCount(len(files)) + ")"
+	}
 	if r.Duplicate {
-		note = " (sent earlier with the same id)"
+		note += " (sent earlier with the same id)"
 	}
 	if r.Queued {
-		fmt.Printf("%s %s queued for %s; it waits here until that machine stores it%s\n",
+		fmt.Printf("%s %s queued for %s%s; it waits here until that machine stores it\n",
 			env.Kind, r.ID, to, note)
 	} else {
 		fmt.Printf("%s %s stored in %s's mailbox%s\n", env.Kind, r.ID, to, note)
@@ -234,7 +256,7 @@ func inbox(args []string) error {
 		}
 		_, to, _ := strings.Cut(it.Message.To, "/")
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", it.Message.ID, to, kind, it.From,
-			it.ReceivedAt.Local().Format("Jan 2 15:04"), firstLine(it.Message.Body.Text, 60))
+			it.ReceivedAt.Local().Format("Jan 2 15:04"), inboxText(it))
 	}
 	return tw.Flush()
 }
@@ -263,19 +285,27 @@ func read(args []string) error {
 	if *asJSON {
 		return printJSON(it)
 	}
+	printItem(os.Stdout, it)
+	return nil
+}
+
+func printItem(w io.Writer, it mailbox.Item) {
 	m := it.Message
-	fmt.Printf("id:          %s\nkind:        %s\nfrom:        %s\n", m.ID, m.Kind, it.From)
+	fmt.Fprintf(w, "id:          %s\nkind:        %s\nfrom:        %s\n", m.ID, m.Kind, it.From)
 	if m.Kind == envelope.Result {
-		fmt.Printf("answers:     %s\nstate:       %s\n", m.ReplyTo, m.Body.State)
+		fmt.Fprintf(w, "answers:     %s\nstate:       %s\n", m.ReplyTo, m.Body.State)
 	}
 	if m.FromThread != "" {
-		fmt.Printf("from_thread: %s   (reply with --to-thread %s)\n", m.FromThread, m.FromThread)
+		fmt.Fprintf(w, "from_thread: %s   (reply with --to-thread %s)\n", m.FromThread, m.FromThread)
 	}
 	if m.ToThread != "" {
-		fmt.Printf("to_thread:   %s\n", m.ToThread)
+		fmt.Fprintf(w, "to_thread:   %s\n", m.ToThread)
 	}
-	fmt.Printf("received:    %s\n\n%s\n", it.ReceivedAt.Local().Format(time.DateTime), m.Body.Text)
-	return nil
+	fmt.Fprintf(w, "received:    %s\n", it.ReceivedAt.Local().Format(time.DateTime))
+	for _, f := range it.Files {
+		fmt.Fprintf(w, "file:        %s (%s)  %s\n", f.Name, humanSize(f.Size), f.Path)
+	}
+	fmt.Fprintf(w, "\n%s\n", m.Body.Text)
 }
 
 func outbox(args []string) error {

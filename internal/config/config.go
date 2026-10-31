@@ -154,6 +154,11 @@ func (c Config) Adapters(home string) (map[string]agent.Adapter, error) {
 		if dir == "" {
 			dir = filepath.Join(home, "work", name)
 		}
+		// The agent's process starts in dir and Codex is also told -C dir, so
+		// a relative dir (from a relative BAF_HOME) would apply twice.
+		if dir, err = filepath.Abs(dir); err != nil {
+			return nil, err
+		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, err
 		}

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -73,6 +74,10 @@ type Options struct {
 	Path string // SQLite file
 	Node string // this node's name, as other nodes address it
 
+	// FilesDir holds the bytes of files sent and received (ADR-0007).
+	// Default: "files" next to Path.
+	FilesDir string
+
 	// Agents served by this mailbox. A nil adapter means the agent only has
 	// an inbox (for example "me", the owner at a terminal). The key AnyAgent
 	// (with a nil adapter) gives every other name an inbox.
@@ -99,6 +104,8 @@ type Options struct {
 type Mailbox struct {
 	db          *sql.DB
 	node        string
+	filesDir    string
+	filesMu     sync.Mutex
 	agents      map[string]agent.Adapter
 	runEnv      func(string) []string
 	now         func() time.Time
@@ -135,6 +142,14 @@ func Open(opts Options) (*Mailbox, error) {
 	if a, ok := opts.Agents[AnyAgent]; ok && a != nil {
 		return nil, fmt.Errorf("%q can only give inboxes; it cannot run an agent", AnyAgent)
 	}
+	if opts.FilesDir == "" {
+		opts.FilesDir = filepath.Join(filepath.Dir(opts.Path), "files")
+	}
+	filesDir, err := filepath.Abs(opts.FilesDir)
+	if err != nil {
+		return nil, err
+	}
+	opts.FilesDir = filesDir
 	if _, err := envelope.ParseAddress(opts.Node + "/x"); err != nil {
 		return nil, fmt.Errorf("bad node name %q: %w", opts.Node, err)
 	}
@@ -145,6 +160,7 @@ func Open(opts Options) (*Mailbox, error) {
 	m := &Mailbox{
 		db:          db,
 		node:        opts.Node,
+		filesDir:    opts.FilesDir,
 		agents:      opts.Agents,
 		runEnv:      opts.RunEnv,
 		now:         opts.Now,
@@ -159,6 +175,9 @@ func Open(opts Options) (*Mailbox, error) {
 	if err := m.recover(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := m.cleanFiles(); err != nil {
+		slog.Error("clean files", "err", err)
 	}
 	return m, nil
 }
@@ -234,6 +253,9 @@ func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 	if err := env.Validate(); err != nil {
 		return Receipt{}, &Rejection{Reason: err.Error()}
 	}
+	if err := m.checkBlobs(env.Body.Files, true); err != nil {
+		return Receipt{}, err
+	}
 	to, _ := envelope.ParseAddress(env.To) // checked by Validate
 	var (
 		r   Receipt
@@ -296,6 +318,9 @@ func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, che
 		}
 	}
 
+	if err := m.placeFiles(from.Node, env.ID, env.Body.Files); err != nil {
+		return Receipt{}, err
+	}
 	state := "pending"
 	if adapter == nil {
 		state = "inbox"
@@ -351,6 +376,22 @@ func (m *Mailbox) useThreadTx(tx *sql.Tx, agentName, peer, threadID string) erro
 func (m *Mailbox) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := m.cleanFiles(); err != nil {
+					slog.Error("clean files", "err", err)
+				}
+			}
+		}
+	}()
 	if m.transport != nil {
 		wg.Add(1)
 		go func() {
@@ -480,6 +521,9 @@ func (m *Mailbox) execute(ctx context.Context, c claimed) {
 		Sender:       c.sender,
 		ResumeThread: c.env.ToThread,
 		Env:          m.runEnv(c.agent),
+	}
+	for _, f := range c.env.Body.Files {
+		job.Files = append(job.Files, agent.File{Name: f.Name, Size: f.Size, Path: m.filePath(c.sender.Node, c.env.ID, f.Name)})
 	}
 	slog.Info("run started", "run", c.runID, "agent", c.agent, "message", c.env.ID, "from", c.sender)
 	adapter, _ := m.agentFor(c.agent) // claim only takes messages for agents with an adapter

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -27,6 +29,11 @@ type Transport interface {
 	// Progress asks node's mailbox about message id, which this node handed
 	// to it (ADR-0006).
 	Progress(ctx context.Context, node, id string) (Progress, error)
+
+	// PutFile hands the bytes of f to node's mailbox ahead of a message to
+	// toAgent that names f (ADR-0007). A *Rejection means the receiver
+	// refused the file for good; any other error means try again later.
+	PutFile(ctx context.Context, node, toAgent string, f envelope.File, body io.Reader) error
 }
 
 // Doorbell wakes another node's agents so they look at their mailbox, for
@@ -184,9 +191,14 @@ func (m *Mailbox) handover(ctx context.Context, o outgoing) {
 		}
 	}
 
-	pctx, cancel := context.WithTimeout(ctx, pushTimeout)
-	_, err := m.transport.Push(pctx, o.node, o.env)
-	cancel()
+	// The files go first: the receiver stores the message only once it holds
+	// every file the message names (ADR-0007).
+	notice, err := m.handOverFiles(ctx, o)
+	if err == nil {
+		pctx, cancel := context.WithTimeout(ctx, pushTimeout)
+		_, err = m.transport.Push(pctx, o.node, o.env)
+		cancel()
+	}
 	if ctx.Err() != nil {
 		return // baf is stopping; this attempt doesn't count
 	}
@@ -208,8 +220,10 @@ func (m *Mailbox) handover(ctx context.Context, o outgoing) {
 			if err := m.failTx(tx, o.seq, rej.Reason); err != nil {
 				return err
 			}
-			return m.failureNoticeTx(tx, o.env, fmt.Sprintf("%s refused your %s %s: %s",
-				o.env.To, o.env.Kind, o.env.ID, rej.Reason))
+			if notice == "" {
+				notice = fmt.Sprintf("%s refused your %s %s: %s", o.env.To, o.env.Kind, o.env.ID, rej.Reason)
+			}
+			return m.failureNoticeTx(tx, o.env, notice)
 		})
 	default:
 		attempts := o.attempts + 1
@@ -225,6 +239,45 @@ func (m *Mailbox) handover(ctx context.Context, o outgoing) {
 	if err != nil {
 		slog.Error("record handover", "message", o.env.ID, "err", err)
 	}
+}
+
+// handOverFiles hands the receiver the bytes of each file o names, once per
+// hash. It returns a *Rejection when o can never go, because the receiver
+// refused a file or a file's bytes are gone from this machine, with the text
+// of the sender's failure notice. Any other error means try again later.
+func (m *Mailbox) handOverFiles(ctx context.Context, o outgoing) (notice string, err error) {
+	to, _ := envelope.ParseAddress(o.env.To)
+	sent := map[string]bool{}
+	for _, f := range o.env.Body.Files {
+		if sent[f.SHA256] {
+			continue
+		}
+		sent[f.SHA256] = true
+		file, err := m.openFile(f.SHA256)
+		if errors.Is(err, os.ErrNotExist) {
+			notice = fmt.Sprintf("File %s of your %s %s to %s is no longer on this machine; send it again.",
+				f.Name, o.env.Kind, o.env.ID, o.env.To)
+			return notice, &Rejection{Reason: notice}
+		}
+		if err != nil {
+			return "", fmt.Errorf("handing over %s: %w", f.Name, err)
+		}
+		// Allow for a slow link: ten seconds per started MB (100 KB/s) on top of a
+		// push's time. Tailscale's DERP relays carried about 300 KB/s to grokbot.
+		fctx, cancel := context.WithTimeout(ctx, pushTimeout+time.Duration((f.Size+999_999)/1_000_000)*10*time.Second)
+		err = m.transport.PutFile(fctx, o.node, to.Agent, f, file)
+		cancel()
+		file.Close()
+		var rej *Rejection
+		if errors.As(err, &rej) {
+			notice = fmt.Sprintf("%s refused file %s of your %s %s: %s", o.env.To, f.Name, o.env.Kind, o.env.ID, rej.Reason)
+			return notice, rej
+		}
+		if err != nil {
+			return "", fmt.Errorf("handing over %s: %w", f.Name, err)
+		}
+	}
+	return "", nil
 }
 
 // giveUp ends a queue whose oldest message ran out of time: that message and

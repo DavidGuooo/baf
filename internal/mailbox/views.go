@@ -17,6 +17,7 @@ type Item struct {
 	State      string            `json:"state"` // pending | running | done | inbox
 	ReceivedAt time.Time         `json:"received_at"`
 	Read       bool              `json:"read"`
+	Files      []FileInfo        `json:"files,omitempty"` // the message's files, where they are on this machine
 }
 
 // ErrNotFound means no message has that id.
@@ -40,7 +41,7 @@ func (m *Mailbox) Inbox(agentName string, all bool) ([]Item, error) {
 	defer rows.Close()
 	var items []Item
 	for rows.Next() {
-		it, err := scanItem(rows)
+		it, err := m.scanItem(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -69,7 +70,7 @@ func (m *Mailbox) Read(agentName, id string) (Item, error) {
 	if agentName != "" && agentName != toAgent {
 		return Item{}, fmt.Errorf("%w: %s is for %s, not %s", ErrNotForYou, id, toAgent, agentName)
 	}
-	it, err := scanItem(m.db.QueryRow(`SELECT sender_node, envelope, state, received_at, read_at
+	it, err := m.scanItem(m.db.QueryRow(`SELECT sender_node, envelope, state, received_at, read_at
 		FROM messages WHERE seq = ?`, seq))
 	if err != nil {
 		return Item{}, err
@@ -82,7 +83,7 @@ func (m *Mailbox) Read(agentName, id string) (Item, error) {
 
 type scanner interface{ Scan(...any) error }
 
-func scanItem(s scanner) (Item, error) {
+func (m *Mailbox) scanItem(s scanner) (Item, error) {
 	var (
 		node, state string
 		raw         []byte
@@ -96,7 +97,12 @@ func scanItem(s scanner) (Item, error) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return Item{}, err
 	}
+	var files []FileInfo
+	for _, f := range env.Body.Files {
+		files = append(files, FileInfo{File: f, Path: m.filePath(node, env.ID, f.Name)})
+	}
 	return Item{
+		Files:      files,
 		Message:    env,
 		From:       Principal{Node: node, Agent: env.FromAgent}.String(),
 		State:      state,
