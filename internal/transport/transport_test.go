@@ -103,8 +103,7 @@ func (n *net2) add(name string, ip string, o nodeOpts) *node {
 		Transport:   &Client{Lookup: lookup, HTTP: hc},
 		Doorbell:    o.doorbell,
 		GiveUpAfter: o.giveUp,
-		RetryBase:   20 * time.Millisecond,
-		RetryMax:    50 * time.Millisecond,
+		RetryDelay:  20 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)

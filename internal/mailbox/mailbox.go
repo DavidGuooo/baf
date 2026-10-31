@@ -94,8 +94,7 @@ type Options struct {
 	Doorbell Doorbell
 
 	GiveUpAfter time.Duration // default DefaultGiveUpAfter
-	RetryBase   time.Duration // first retry delay, doubling up to RetryMax; default 5s
-	RetryMax    time.Duration // default 2 minutes
+	RetryDelay  time.Duration // wait after a failed try before the next; default 5s
 
 	Now func() time.Time // for tests; defaults to time.Now
 }
@@ -112,8 +111,7 @@ type Mailbox struct {
 	transport   Transport
 	doorbell    Doorbell
 	giveUpAfter time.Duration
-	retryBase   time.Duration
-	retryMax    time.Duration
+	retryDelay  time.Duration
 
 	wake       chan struct{} // nudges Run to look for claimable messages
 	outboxWake chan struct{} // nudges the outbox to look for messages to push
@@ -130,11 +128,8 @@ func Open(opts Options) (*Mailbox, error) {
 	if opts.GiveUpAfter <= 0 {
 		opts.GiveUpAfter = DefaultGiveUpAfter
 	}
-	if opts.RetryBase <= 0 {
-		opts.RetryBase = 5 * time.Second
-	}
-	if opts.RetryMax <= 0 {
-		opts.RetryMax = 2 * time.Minute
+	if opts.RetryDelay <= 0 {
+		opts.RetryDelay = 5 * time.Second
 	}
 	if _, ok := opts.Agents[SystemAgent]; ok {
 		return nil, fmt.Errorf("%q is reserved for baf's own notices; rename that agent", SystemAgent)
@@ -167,8 +162,7 @@ func Open(opts Options) (*Mailbox, error) {
 		transport:   opts.Transport,
 		doorbell:    opts.Doorbell,
 		giveUpAfter: opts.GiveUpAfter,
-		retryBase:   opts.RetryBase,
-		retryMax:    opts.RetryMax,
+		retryDelay:  opts.RetryDelay,
 		wake:        make(chan struct{}, 1),
 		outboxWake:  make(chan struct{}, 1),
 	}

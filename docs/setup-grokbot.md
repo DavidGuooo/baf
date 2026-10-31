@@ -59,11 +59,18 @@ Do this:
          ~/.local/bin/baf read --as <bot> <id>
        If it is a request, send your answer back with:
          ~/.local/bin/baf send <from> --as <bot> --kind result --reply-to <id> --from-thread <bot> "your answer"
-       If the message shows a from_thread, also add: --to-thread <that from_thread>"
+       If the message shows a from_thread, also add: --to-thread <that from_thread>
+       After your last baf send, run this before you finish, so your messages leave before this computer pauses:
+         ~/.local/bin/baf flush --as <bot>"
    d. If no bot has that name, run this, with <bots> replaced by the names of the bots that do exist, in lowercase and comma-separated:
       ~/.local/bin/baf send <from> --as bridge --kind result --reply-to <id> --state rejected "There is no bot named <bot> on grokbot. Available bots: <bots>"
-3. Stop. If "messages" is empty, just stop.
+3. Run: ~/.local/bin/baf flush --as bridge
+4. Stop. If "messages" is empty, just stop.
 ```
+
+`baf wait` and `baf flush` each wait up to 10 minutes. grokbot pauses a few minutes after
+the last bot run ends, and nothing running inside it (baf included) keeps it awake, so these
+waits are what keep it up while a message that failed its first try is retried.
 
 Things to watch for on the first ring (open questions from T0c): does the routine start
 with the JSON body intact; does grokbot come online if it was asleep, and how quickly; may

@@ -15,11 +15,12 @@ import (
 
 	"github.com/DavidGuooo/baf/internal/config"
 	"github.com/DavidGuooo/baf/internal/daemon"
+	"github.com/DavidGuooo/baf/internal/mailbox"
 )
 
 // These commands are for machines where nothing keeps baf running, like
 // grokbot: a routine run brings the mailbox up and waits for the messages its
-// doorbell announced.
+// doorbell announced, and a bot's run waits for its own messages to leave.
 
 // start runs `baf serve` in the background unless it is already running,
 // and waits until it answers.
@@ -111,19 +112,24 @@ func stop(args []string) error {
 
 func pidPath(home string) string { return filepath.Join(home, "baf.pid") }
 
+// runWait is how long wait and flush keep a routine run, and with it the
+// machine, awake. grokbot pauses a few minutes after its last run ends; this
+// leaves room for about 20 more tries (one every 30 seconds) if pushes fail.
+const runWait = 10 * time.Minute
+
 // wait blocks until every given message id is in this node's mailbox
 // (addressed to --as, if given). It keeps waiting while the daemon is still
 // starting.
 func wait(args []string) error {
 	fs := flag.NewFlagSet("wait", flag.ExitOnError)
 	as := fs.String("as", os.Getenv("BAF_AGENT"), "")
-	timeout := fs.Duration("timeout", 2*time.Minute, "")
+	timeout := fs.Duration("timeout", runWait, "")
 	ids, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(ids) == 0 {
-		return errors.New("usage: baf wait [--as AGENT] [--timeout 2m] ID...")
+		return errors.New("usage: baf wait [--as AGENT] [--timeout 10m] ID...")
 	}
 	c, err := client()
 	if err != nil {
@@ -151,4 +157,48 @@ func wait(args []string) error {
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// flush blocks until none of --as's messages is waiting in the outbox, so a
+// bot's run (and the machine) stays awake until what it sent has left. Other
+// agents' messages don't hold it up.
+func flush(args []string) error {
+	fs := flag.NewFlagSet("flush", flag.ExitOnError)
+	as := fs.String("as", defaultAgent(), "")
+	timeout := fs.Duration("timeout", runWait, "")
+	if _, err := parse(fs, args); err != nil {
+		return err
+	}
+	c, err := client()
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(*timeout)
+	for {
+		items, err := c.Outbox(false)
+		if err != nil {
+			return err
+		}
+		waiting := waitingFrom(items, *as)
+		if len(waiting) == 0 {
+			fmt.Printf("nothing from %s waiting to be sent\n", *as)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("still waiting after %s: %s; they go out when this machine is next awake",
+				*timeout, strings.Join(waiting, " "))
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// waitingFrom returns the ids of agent's messages still waiting to be handed over.
+func waitingFrom(items []mailbox.OutItem, agent string) []string {
+	var ids []string
+	for _, it := range items {
+		if it.FromAgent == agent && it.State == "waiting" {
+			ids = append(ids, it.ID)
+		}
+	}
+	return ids
 }

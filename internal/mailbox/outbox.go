@@ -48,7 +48,9 @@ type Doorbell interface {
 // ErrNoDoorbell means there is no doorbell to ring for that node.
 var ErrNoDoorbell = errors.New("no doorbell for that node")
 
-const pushTimeout = 20 * time.Second
+// pushTimeout plus the default RetryDelay makes a try every 30 seconds while
+// the receiver doesn't answer.
+const pushTimeout = 25 * time.Second
 
 // enqueueTx puts env in the outbox for the node in to. Sending the same id
 // twice queues it once.
@@ -227,12 +229,11 @@ func (m *Mailbox) handover(ctx context.Context, o outgoing) {
 		})
 	default:
 		attempts := o.attempts + 1
-		delay := min(m.retryBase<<min(attempts-1, 20), m.retryMax)
 		slog.Info("handover failed; will retry", "message", o.env.ID, "to", o.env.To,
-			"attempt", attempts, "in", delay, "err", err)
+			"attempt", attempts, "in", m.retryDelay, "err", err)
 		err = m.inTx(func(tx *sql.Tx) error {
 			_, err2 := tx.Exec(`UPDATE outbox SET attempts = ?, rung = ?, last_error = ?, next_try_at = ? WHERE seq = ?`,
-				attempts, o.rung, err.Error(), m.now().Add(delay).UnixMilli(), o.seq)
+				attempts, o.rung, err.Error(), m.now().Add(m.retryDelay).UnixMilli(), o.seq)
 			return err2
 		})
 	}
