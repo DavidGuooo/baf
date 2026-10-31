@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -74,49 +75,54 @@ func validClient(c client) bool {
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
+	refuse := func(status int, code, reason string) {
+		slog.Info("door register refused", "reason", reason)
+		oauthError(w, status, code)
+	}
 	var c client
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil || !validClient(c) {
-		oauthError(w, 400, "invalid_client_metadata")
+		refuse(400, "invalid_client_metadata", "invalid client metadata")
 		return
 	}
 	c.ID = randomToken()
 	raw, err := json.Marshal(c)
 	if err != nil {
-		oauthError(w, 500, "server_error")
+		refuse(500, "server_error", "store unavailable")
 		return
 	}
 	// Bound anonymous registration storage. Old registrations with no connector
 	// expire after 30 days; approved clients remain available for another sign-in.
 	tx, err := s.db.Begin()
 	if err != nil {
-		oauthError(w, 500, "server_error")
+		refuse(500, "server_error", "store unavailable")
 		return
 	}
 	defer tx.Rollback()
 	_, err = tx.Exec(`DELETE FROM clients WHERE created_at < ?
  AND id NOT IN (SELECT client_id FROM connectors)`, s.now().Add(-30*24*time.Hour).Unix())
 	if err != nil {
-		oauthError(w, 500, "server_error")
+		refuse(500, "server_error", "store unavailable")
 		return
 	}
 	var count int
 	if err = tx.QueryRow(`SELECT count(*) FROM clients`).Scan(&count); err != nil {
-		oauthError(w, 500, "server_error")
+		refuse(500, "server_error", "store unavailable")
 		return
 	}
 	if count >= 1000 {
-		oauthError(w, 429, "temporarily_unavailable")
+		refuse(429, "temporarily_unavailable", "registration limit reached")
 		return
 	}
 	_, err = tx.Exec(`INSERT INTO clients VALUES (?,?,?)`, c.ID, string(raw), s.now().Unix())
 	if err != nil {
-		oauthError(w, 500, "server_error")
+		refuse(500, "server_error", "store unavailable")
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		oauthError(w, 500, "server_error")
+		refuse(500, "server_error", "store unavailable")
 		return
 	}
+	slog.Info("door register accepted", "client_id", c.ID)
 	writeJSON(w, 201, map[string]any{
 		"client_id": c.ID, "client_id_issued_at": s.now().Unix(), "client_name": c.Name,
 		"redirect_uris": c.Redirects, "token_endpoint_auth_method": "none",
@@ -139,23 +145,36 @@ func (s *Server) lookupClient(ctx context.Context, id string) (client, error) {
 	if err != nil || !httpsURL(id) || (u.Port() != "" && u.Port() != "443") {
 		return c, errors.New("unknown client_id; use registration or an HTTPS client metadata URL on port 443")
 	}
+	failed := func(reason string) {
+		slog.Info("door CIMD metadata fetch failed", "client_id", logURL(id), "reason", reason)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, id, nil)
 	if err != nil {
-		return c, err
+		failed("invalid metadata request")
+		return c, errors.New("invalid metadata request")
 	}
 	resp, err := s.fetch.Do(req)
 	if err != nil {
+		reason := "metadata request failed"
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			reason = "metadata request timed out"
+		}
+		failed(reason)
 		return c, errors.New("could not fetch client metadata")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		slog.Info("door CIMD metadata fetch failed", "client_id", logURL(id), "reason", "HTTP status", "status", resp.StatusCode)
 		return c, errors.New("client metadata did not return HTTP 200")
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRequest+1))
 	if err != nil || len(data) > maxRequest {
+		failed("metadata too large or unreadable")
 		return c, errors.New("client metadata is too large or unreadable")
 	}
 	if err := json.Unmarshal(data, &c); err != nil || c.ID != id || !validClient(c) {
+		failed("invalid metadata or mismatched client_id")
 		return c, errors.New("invalid client metadata or mismatched client_id")
 	}
 	return c, nil

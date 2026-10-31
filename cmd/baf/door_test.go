@@ -139,7 +139,7 @@ func TestDoorCommandsOverSocket(t *testing.T) {
 	if len(match) != 2 {
 		t.Fatalf("Allow page: %s", body)
 	}
-	resp, err = browser.PostForm(signin.URL+"/authorize", url.Values{"csrf": {string(match[1])}, "days": {"30"}, "decision": {"allow"}})
+	resp, err = browser.PostForm(signin.URL+"/authorize", url.Values{"csrf": {string(match[1])}, "decision": {"allow"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestDoorCommandsOverSocket(t *testing.T) {
 		t.Fatalf("token: %+v %v", tok, err)
 	}
 	list, err = c.DoorList()
-	if err != nil || len(list) != 1 || !list[0].Connected || list[0].ApprovedBy != "owner@example.com" || list[0].ClientID != registration.ID || list[0].ExpiresAt.IsZero() {
+	if err != nil || len(list) != 1 || !list[0].Connected || list[0].ApprovedBy != "owner@example.com" || list[0].ClientID != registration.ID || list[0].State != "connected" {
 		t.Fatalf("connected list: %+v %v", list, err)
 	}
 	for _, args := range [][]string{{"list"}, {"list", "--json"}, {"revoke", "openai/dot"}} {

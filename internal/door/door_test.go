@@ -157,9 +157,9 @@ func (h *harness) page(q url.Values) (int, string, string) {
 	return resp.StatusCode, csrf, body
 }
 
-func (h *harness) allow(csrf string, days string) (*http.Response, string) {
+func (h *harness) allow(csrf string) (*http.Response, string) {
 	h.t.Helper()
-	form := url.Values{"csrf": {csrf}, "days": {days}, "decision": {"allow"}}
+	form := url.Values{"csrf": {csrf}, "decision": {"allow"}}
 	return h.request(h.browser, "POST", h.signin.URL+"/authorize", form.Encode(),
 		map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
 }
@@ -170,7 +170,10 @@ func (h *harness) code(name string) string {
 	if status != 200 || csrf == "" || !strings.Contains(body, "owner@example.com") || !strings.Contains(body, name) {
 		h.t.Fatalf("Allow page: %d %s", status, body)
 	}
-	resp, body := h.allow(csrf, "30")
+	if strings.Contains(body, `name="days"`) || strings.Contains(body, "Connector lasts") {
+		h.t.Fatal("Allow page still asks for a connector duration")
+	}
+	resp, body := h.allow(csrf)
 	if resp.StatusCode != 302 {
 		h.t.Fatalf("Allow: %d %s", resp.StatusCode, body)
 	}
@@ -345,15 +348,13 @@ func TestTokenBindings(t *testing.T) {
 }
 
 func TestExpiredRevokedReplacedAndRemoved(t *testing.T) {
-	for _, kind := range []string{"expired access", "expired connector", "revoked", "replaced", "removed"} {
+	for _, kind := range []string{"expired access", "revoked", "replaced", "removed"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
 			tok := h.token(codeForm(h.code("openai/dot")), 200)
 			switch kind {
 			case "expired access":
 				h.clock.Add(int64((24 * time.Hour) / time.Second))
-			case "expired connector":
-				h.clock.Add(int64((30 * 24 * time.Hour) / time.Second))
 			case "revoked":
 				if err := h.s.Revoke("openai/dot"); err != nil {
 					t.Fatal(err)
@@ -425,7 +426,7 @@ func TestAllowGuard(t *testing.T) {
 			case "expired":
 				h.clock.Add(600)
 			case "replayed":
-				resp, _ := h.allow(csrf, "30")
+				resp, _ := h.allow(csrf)
 				if resp.StatusCode != 302 {
 					t.Fatal(resp.Status)
 				}
@@ -434,7 +435,7 @@ func TestAllowGuard(t *testing.T) {
 				h.identity.removed = true
 				h.identity.mu.Unlock()
 			}
-			resp, body := h.allow(csrf, "30")
+			resp, body := h.allow(csrf)
 			if resp.StatusCode != 403 {
 				t.Fatalf("%d: %s", resp.StatusCode, body)
 			}
@@ -488,7 +489,7 @@ func TestDynamicRegistrationAndVendorWarning(t *testing.T) {
 	if status != 200 || !strings.Contains(page, "Warning:") {
 		t.Fatalf("%d %s", status, page)
 	}
-	resp, body = h.allow(csrf, "7")
+	resp, body = h.allow(csrf)
 	if resp.StatusCode != 302 {
 		t.Fatalf("%d %s", resp.StatusCode, body)
 	}
@@ -545,16 +546,94 @@ func TestConcurrentRefreshSingleUse(t *testing.T) {
 	}
 }
 
-func TestRefreshKeepsChosenLimit(t *testing.T) {
+func TestConnectorDoesNotExpire(t *testing.T) {
 	h := newHarness(t)
 	tok := h.token(codeForm(h.code("openai/dot")), 200)
-	h.clock.Add(30*86400 - 3600)
+	h.clock.Add(366 * 86400)
+	h.bearer("openai/dot", tok.Access, 401)
 	tok = h.token(refreshForm(tok), 200)
-	if tok.ExpiresIn != 3600 {
-		t.Fatalf("last access lifetime = %d, want 3600", tok.ExpiresIn)
+	if tok.ExpiresIn != 86400 {
+		t.Fatalf("access duration = %d, want 86400", tok.ExpiresIn)
 	}
 	h.bearer("openai/dot", tok.Access, 200)
-	h.clock.Add(3600)
+	h.clock.Add(86400)
 	h.bearer("openai/dot", tok.Access, 401)
-	h.token(refreshForm(tok), 400)
+	h.token(refreshForm(tok), 200)
+}
+
+func TestLegacyConnectorExpiryIgnored(t *testing.T) {
+	for _, exchanged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exchanged=%v", exchanged), func(t *testing.T) {
+			h := newHarness(t)
+			code := h.code("openai/dot")
+			var storedExpiry int64
+			if err := h.s.db.QueryRow(`SELECT expires_at FROM connectors`).Scan(&storedExpiry); err != nil || storedExpiry != 0 {
+				t.Fatalf("new expiry = %d, err = %v", storedExpiry, err)
+			}
+			var tok tokens
+			if exchanged {
+				tok = h.token(codeForm(code), 200)
+			}
+			// Simulate the old row's one-year deadline passing. Opening the
+			// database must keep its code and tokens without rewriting the row.
+			oldExpiry := h.s.now().Unix() - 1
+			if _, err := h.s.db.Exec(`UPDATE connectors SET expires_at=?`, oldExpiry); err != nil {
+				t.Fatal(err)
+			}
+			other, err := Open(Options{Path: h.path, PublicURL: h.s.publicURL, SigninURL: h.s.signinURL,
+				Policy: h.s.policy, Identity: h.identity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer other.Close()
+			other.now = h.s.now
+			if err := other.db.QueryRow(`SELECT expires_at FROM connectors`).Scan(&storedExpiry); err != nil || storedExpiry != oldExpiry {
+				t.Fatalf("legacy row changed: %d, err = %v", storedExpiry, err)
+			}
+			if exchanged {
+				if _, err := other.Authenticate(tok.Access, h.s.resource("openai/dot")); err != nil {
+					t.Fatalf("legacy access token refused: %v", err)
+				}
+				tok, err = other.exchange(refreshForm(tok))
+			} else {
+				tok, err = other.exchange(codeForm(code))
+			}
+			if err != nil || tok.ExpiresIn != 86400 {
+				t.Fatalf("legacy exchange: expires_in=%d err=%v", tok.ExpiresIn, err)
+			}
+			h.bearer("openai/dot", tok.Access, 200)
+		})
+	}
+}
+
+func TestConnectorStates(t *testing.T) {
+	h := newHarness(t)
+	check := func(want string) {
+		t.Helper()
+		list, err := h.s.List()
+		if err != nil || len(list) != 2 || list[0].State != want || list[0].Connected != (want == "connected") {
+			t.Fatalf("want %q, list=%+v err=%v", want, list, err)
+		}
+	}
+	check("none")
+	h.code("openai/dot")
+	check("waiting for ChatGPT")
+	h.clock.Add(300)
+	check("sign-in expired")
+	code := h.code("openai/dot")
+	check("waiting for ChatGPT")
+	h.token(codeForm(code), 200)
+	h.clock.Add(366 * 86400) // Only the access token expires.
+	check("connected")
+	if err := h.s.Revoke("openai/dot"); err != nil {
+		t.Fatal(err)
+	}
+	check("none")
+	// The name alone does not identify the app; a non-OpenAI client can use it.
+	_, err := h.s.approve(grant{Connector: Connector{Agent: "openai/dot", ClientID: "https://example.com/client.json"},
+		Redirect: "https://example.com/callback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("waiting for the app")
 }

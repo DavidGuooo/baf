@@ -174,7 +174,7 @@ The probe used this flow; labels may differ by account:
 3. Create the plugin and install it from your personal plugins.
 4. When prompted to sign in, open the Allow page from a person's device connected to
    the tailnet. It shows your Tailscale login, the client, and its redirect address.
-   Tagged devices cannot approve. Choose a lifetime and select **Allow**.
+   Tagged devices cannot approve. Select **Allow**.
 5. Check that the connector lists `send`, `request`, `reply`, `inbox`, `read`, and `status`.
    It should also list `message.created`. A second Door agent needs its own policy entry
    and connector URL.
@@ -263,9 +263,9 @@ otherwise). File metadata is included when present, without local paths or file 
 An event is a wake: it does not mark mail read, change its state, or confirm a handover.
 Use `read` explicitly when you want the sender to see that the message was opened.
 
-Subscriptions last **24 hours by default** when ChatGPT omits `ttlMs`. Explicit lifetimes
-are clamped to one minute through seven days; `ttlMs: null` grants seven days. All are
-capped by the sign-in's expiry. The response's `refreshBefore` tells the client when to
+Subscriptions last **24 hours by default** when ChatGPT omits `ttlMs`. Explicit durations
+are clamped to one minute through seven days; `ttlMs: null` grants seven days.
+The response's `refreshBefore` tells the client when to
 renew with `events/subscribe`. Renewals verify the callback again. `events/unsubscribe`
 uses the same event name, empty arguments, and webhook delivery URL as subscribe.
 Only public HTTPS callbacks are accepted; redirects are never followed, and each
@@ -291,7 +291,13 @@ baf door revoke openai/dot
 ```
 
 These commands use the daemon's owner-only Unix socket. List shows every current
-policy name, connection status, approver, approval time, client id, and expiry.
+policy name, connection status, approver, approval time, and client id. Status is
+`connected` when a refresh token exists, `waiting for ChatGPT` (or `waiting for the app`)
+while an approved code can still be exchanged, `sign-in expired` when that code expired
+unused, or `none` when there is no connector. The waiting label uses the client's
+metadata URL and registered redirect to recognize ChatGPT, not the Door agent's name.
+JSON output includes the same `state` and the existing `connected` boolean, with no
+connector expiry.
 Revoke deletes its connector, access tokens, refresh token, any unexchanged code,
 subscriptions, and queued events.
 It is safe to repeat and also works after the name is removed from the policy.
@@ -312,16 +318,18 @@ To shut the door down:
 
 ## Sign-in and token details
 
-The owner chooses 7, 30, 90, or 365 days (default 30). Codes expire after five minutes
-and can be exchanged once with S256 PKCE. Access tokens last one day, capped by the
-connector's expiry. Refresh tokens rotate on successful use; refreshing does not
-extend the connector's lifetime or invalidate earlier, unexpired access tokens.
+Connectors do not expire. They stay usable until revoked, replaced by a new sign-in,
+or denied by removing their name from the policy. Codes expire after five minutes
+and can be exchanged once with S256 PKCE. Access tokens last one day.
+Refresh tokens rotate on successful use; refreshing does not invalidate earlier,
+unexpired access tokens. Existing connectors and tokens keep working: the old
+connector `expires_at` database column is ignored, and new approvals store zero there.
 A token is bound to exactly one Door agent and connector URL.
 
 The Allow form has a one-use guard bound to its browser, person, device, and original
 request, expiring after ten minutes. Pending forms do not survive a restart. Client
 metadata is fetched only from public HTTPS addresses on port 443, without redirects.
-Registration is bounded to 1,000 clients; unconnected registrations older than 30 days
+Registration is bounded to 1,000 clients; unconnected registrations older than 720 hours
 are removed on the next registration request.
 
 `door.db`, beside `mailbox.db`, stores connector details and SHA-256 hashes of random
@@ -331,6 +339,17 @@ saved or logged. The owner's identity stays in the local record. Every exchange,
 refresh, and bearer check consults
 the current policy. Removing a name denies access immediately; revoke it too if its
 old connector must remain unusable after the name is added back.
+
+Sign-in steps appear in `~/.baf/baf.log`: `door Allow page shown`, `door sign-in allowed`
+or `door sign-in denied`, then `door token issued` or `door token refused`. Allow logs
+name the Door agent, approver login, and client id; token logs name the Door agent when
+known and the grant type when supported. Refusals give the specific reason, including
+the expected and given resource URLs for a mismatch; the client sees only
+`invalid_grant`. Registration logs `door register accepted` or `door register refused`;
+CIMD failures log the client metadata URL and a short reason. URLs omit queries,
+fragments, and credentials. No token, code, verifier, or secret is logged.
+`door bearer refused` names the Door agent from the MCP path and the reason, at most
+once per minute per Door agent. Requests without a bearer token stay quiet.
 
 The endpoint supports MCP `2026-07-28` discovery without `initialize`, and legacy
 `initialize` versions `2025-11-25`, `2025-06-18`, and `2025-03-26`. It handles POST

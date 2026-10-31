@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -58,6 +59,7 @@ type Server struct {
 	now                  func() time.Time
 	mu                   sync.Mutex
 	pending              map[string]approval
+	bearerRefusals       map[string]time.Time
 }
 
 // Open opens the connector store without starting any listeners.
@@ -79,6 +81,7 @@ func Open(o Options) (*Server, error) {
 		writes: map[string][]time.Time{},
 		fetch:  metadataClient(), now: time.Now, pending: map[string]approval{},
 		callbacks: callbackClient(), eventWake: make(chan struct{}, 1),
+		bearerRefusals: map[string]time.Time{},
 	}, nil
 }
 
@@ -94,13 +97,15 @@ func validAgent(name string) bool {
 	return err == nil
 }
 
+var errDoorNotListed = errors.New("the Tailscale policy does not list this Door agent")
+
 func (s *Server) allowed(name string) error {
 	names, err := s.policy.DoorAgents()
 	if err != nil {
 		return err
 	}
 	if !slices.Contains(names, name) {
-		return fmt.Errorf("the Tailscale policy does not list %q as a Door agent on this Relay", name)
+		return fmt.Errorf("%w: %q on this Relay", errDoorNotListed, name)
 	}
 	return nil
 }
@@ -139,6 +144,7 @@ func (s *Server) PublicHandler() http.Handler {
 		}
 		if r.Method == "POST" && (path == "/token" || path == "/register") {
 			if !limitRequest(w, r) {
+				slog.Info("door "+strings.TrimPrefix(path, "/")+" refused", "reason", "request too large or unreadable")
 				return
 			}
 			if path == "/token" {
@@ -170,6 +176,8 @@ func (s *Server) PublicHandler() http.Handler {
 				if principal, err := s.Authenticate(auth[1], s.resource(name)); err == nil {
 					s.mcp(w, r, principal)
 					return
+				} else if s.shouldLogBearerRefusal(name) {
+					slog.Info("door bearer refused", "agent", name, "reason", refusalReason(err))
 				}
 			}
 			metadata := s.publicURL + "/.well-known/oauth-protected-resource/door/" + name + "/mcp"
@@ -216,16 +224,14 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	if err := r.ParseForm(); err != nil {
+		slog.Info("door token refused", "reason", "invalid form")
 		oauthError(w, 400, "invalid_request")
 		return
 	}
 	q := r.PostForm
 	if !singleValues(q) {
+		slog.Info("door token refused", "reason", "duplicate form parameter")
 		oauthError(w, 400, "invalid_request")
-		return
-	}
-	if q.Get("grant_type") != "authorization_code" && q.Get("grant_type") != "refresh_token" {
-		oauthError(w, 400, "unsupported_grant_type")
 		return
 	}
 	out, err := s.exchange(q)

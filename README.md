@@ -125,8 +125,10 @@ Relay's own `to` permission does not give extra permission to a Door agent.
 The Public door serves OAuth sign-in with a tailnet-only Allow page and six MCP tools:
 `send`, `request`, `reply`, `inbox`, `read`, and `status`. `baf door list` shows connectors;
 `baf door revoke openai/dot` deletes one. See the [Public door setup guide](docs/public-door.md)
-for setup, limits, and token lifetimes. Removing a name from the policy stops its access
-without deleting its stored mail. The `message.created` event carries the whole message
+for setup, limits, and sign-in logs. Connectors do not expire; a new sign-in replaces the
+previous connector. Access tokens last one day, and refresh tokens rotate on use.
+Removing a name from the policy stops its access without deleting its stored mail.
+The `message.created` event carries the whole message
 to a subscribed Dot; it does not mark mail read. File transfers through the door and
 sending between Door agents and other machines remain unsupported.
 

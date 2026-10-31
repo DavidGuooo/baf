@@ -188,6 +188,36 @@ func TestEventSubscriptionTTL(t *testing.T) {
 	}
 }
 
+func TestEventsIgnoreLegacyConnectorExpiry(t *testing.T) {
+	h := newHarness(t)
+	tok := h.token(codeForm(h.code("openai/dot")), 200)
+	cb := newEventCallback(t, h.s)
+	// A connector made by the old door would have cut this subscription short.
+	if _, err := h.s.db.Exec(`UPDATE connectors SET expires_at=?`, h.s.now().Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	id := h.subscribeCallback(cb, tok.Access)
+	var expires int64
+	if err := h.s.db.QueryRow(`SELECT expires_at FROM subscriptions WHERE id=?`, id).Scan(&expires); err != nil {
+		t.Fatal(err)
+	}
+	if expires != h.s.now().Add(24*time.Hour).UnixMilli() {
+		t.Fatalf("subscription capped at %v", time.UnixMilli(expires))
+	}
+	h.clock.Add(3600)
+	if _, err := h.mailbox.Send(envelope.Envelope{Kind: envelope.Notice, FromAgent: "me", To: "openai/dot",
+		Body: envelope.Body{Text: "after the old deadline"}}); err != nil {
+		t.Fatal(err)
+	}
+	h.pumpEvents()
+	takeEvent(t, cb)
+	// Renewal works after that old deadline too.
+	h.subscribeCallback(cb, tok.Access)
+	h.clock.Add(86400)
+	h.pumpEvents()
+	countRows(t, h.s, "subscriptions", 0)
+}
+
 func TestEventCallbackRestrictions(t *testing.T) {
 	h := newHarness(t)
 	tok := h.token(codeForm(h.code("openai/dot")), 200)

@@ -127,8 +127,7 @@ func (s *Server) queueEvents() error {
 
 func (s *Server) deliverEvents(ctx context.Context) error {
 	now := s.now().UnixMilli()
-	if _, err := s.db.Exec(`DELETE FROM subscriptions WHERE expires_at<=?
- OR agent IN (SELECT agent FROM connectors WHERE expires_at<=?)`, now, s.now().Unix()); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM subscriptions WHERE expires_at<=?`, now); err != nil {
 		return err
 	}
 	// Giving up is quiet. The mail still waits in inbox.
@@ -177,8 +176,8 @@ func (s *Server) deliverEvent(ctx context.Context, id string) error {
 	err := s.db.QueryRow(`SELECT s.id,s.agent,s.url,s.secret,s.generation,d.body,d.attempts
  FROM event_deliveries d JOIN subscriptions s ON s.id=d.subscription
  JOIN connectors c ON c.agent=s.agent
- WHERE d.id=? AND d.expires_at>? AND s.expires_at>? AND c.expires_at>?`,
-		id, s.now().UnixMilli(), s.now().UnixMilli(), s.now().Unix()).Scan(
+ WHERE d.id=? AND d.expires_at>? AND s.expires_at>?`,
+		id, s.now().UnixMilli(), s.now().UnixMilli()).Scan(
 		&sub, &principal, &url, &secret, &generation, &body, &attempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil

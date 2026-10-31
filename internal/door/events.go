@@ -134,8 +134,8 @@ func (s *Server) subscribe(ctx context.Context, principal string, raw json.RawMe
 	// Remember this connector while verification is in flight. Revoke, a new
 	// sign-in or token rotation must not let an old challenge add a subscription.
 	var connector []byte
-	if err := s.db.QueryRow(`SELECT refresh_hash FROM connectors WHERE agent=? AND expires_at>?`,
-		principal, s.now().Unix()).Scan(&connector); err != nil || len(connector) == 0 {
+	if err := s.db.QueryRow(`SELECT refresh_hash FROM connectors WHERE agent=?`,
+		principal).Scan(&connector); err != nil || len(connector) == 0 {
 		return nil, &rpcError{-32602, "connector is no longer active"}
 	}
 	id := subID(principal, p.Delivery.URL)
@@ -159,11 +159,11 @@ func (s *Server) subscribe(ctx context.Context, principal string, raw json.RawMe
 		return nil, &rpcError{-32603, "could not expire subscription"}
 	}
 	result, err := tx.Exec(`INSERT INTO subscriptions (id,agent,url,secret,generation,after_seq,expires_at)
- SELECT ?,agent,?,?,?,?,MIN(?,expires_at*1000) FROM connectors
- WHERE agent=? AND refresh_hash=? AND expires_at>?
+ SELECT ?,agent,?,?,?,?,? FROM connectors
+ WHERE agent=? AND refresh_hash=?
  ON CONFLICT(id) DO UPDATE SET secret=excluded.secret,generation=excluded.generation,
  expires_at=excluded.expires_at`, id, p.Delivery.URL, p.Delivery.Secret, randomToken(), seq, expires.UnixMilli(),
-		principal, connector, s.now().Unix())
+		principal, connector)
 	if err != nil {
 		return nil, &rpcError{-32603, "could not store subscription"}
 	}

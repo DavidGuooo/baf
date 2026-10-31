@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/url"
 	"os"
 	"time"
@@ -20,7 +21,7 @@ type Connector struct {
 	ApprovedBy string    `json:"approved_by,omitempty"`
 	ApprovedAt time.Time `json:"approved_at,omitempty"`
 	ClientID   string    `json:"client_id,omitempty"`
-	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+	State      string    `json:"state"`
 }
 
 type grant struct {
@@ -131,58 +132,75 @@ func hash(s string) []byte {
 func challenge(verifier string) string { return base64.RawURLEncoding.EncodeToString(hash(verifier)) }
 
 // approve replaces the connector immediately, including any unspent code.
+// The old connector expires_at column is kept for existing databases. New
+// approvals store zero; no operation reads it. Tokens keep their own expiry.
 func (s *Server) approve(g grant) (string, error) {
 	code := randomToken()
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO connectors
  (agent,approved_by,approved_at,client_id,expires_at,resource,redirect,challenge,scope,code_hash,code_expires)
  VALUES (?,?,?,?,?,?,?,?,?,?,?)`, g.Agent, g.ApprovedBy, g.ApprovedAt.Unix(), g.ClientID,
-		g.ExpiresAt.Unix(), g.Resource, g.Redirect, g.Challenge, g.Scope,
+		0, g.Resource, g.Redirect, g.Challenge, g.Scope,
 		hash(code), s.now().Add(5*time.Minute).Unix())
 	return code, err
 }
 
 // exchange consumes a code or rotates a refresh token in the same transaction
 // that saves its replacement. Two concurrent uses cannot both succeed.
-func (s *Server) exchange(form url.Values) (tokens, error) {
+func (s *Server) exchange(form url.Values) (out tokens, err error) {
 	kind := form.Get("grant_type")
+	var g grant
+	defer func() {
+		if err == nil {
+			slog.Info("door token issued", "agent", g.Agent, "grant_type", kind)
+			return
+		}
+		attrs := []any{"agent", g.Agent, "reason", refusalReason(err)}
+		if kind == "authorization_code" || kind == "refresh_token" {
+			attrs = append(attrs, "grant_type", kind)
+		}
+		if refusalReason(err) == "resource mismatch" {
+			attrs = append(attrs, "expected_resource", logURL(g.Resource), "given_resource", logURL(form.Get("resource")))
+		}
+		slog.Info("door token refused", attrs...)
+	}()
+	if kind != "authorization_code" && kind != "refresh_token" {
+		return tokens{}, grantRefusal("unsupported grant type")
+	}
 	column, raw := "code_hash", form.Get("code")
 	if kind == "refresh_token" {
 		column, raw = "refresh_hash", form.Get("refresh_token")
 	}
+	unknown := "unknown or used code"
+	if kind == "refresh_token" {
+		unknown = "unknown or used refresh token"
+	}
 	if raw == "" {
-		return tokens{}, errGrant
+		return tokens{}, grantRefusal(unknown)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return tokens{}, err
 	}
 	defer tx.Rollback()
-	var g grant
-	var expires, codeExpires int64
-	err = tx.QueryRow(`SELECT agent,client_id,expires_at,resource,redirect,challenge,scope,code_expires
+	var codeExpires int64
+	err = tx.QueryRow(`SELECT agent,client_id,resource,redirect,challenge,scope,code_expires
  FROM connectors WHERE `+column+`=?`, hash(raw)).Scan(
-		&g.Agent, &g.ClientID, &expires, &g.Resource, &g.Redirect, &g.Challenge, &g.Scope, &codeExpires)
+		&g.Agent, &g.ClientID, &g.Resource, &g.Redirect, &g.Challenge, &g.Scope, &codeExpires)
 	if errors.Is(err, sql.ErrNoRows) {
-		return tokens{}, errGrant
+		return tokens{}, grantRefusal(unknown)
 	}
 	if err != nil {
 		return tokens{}, err
 	}
 	now := s.now()
-	// A code or refresh token is valid only for its approved client and resource.
-	if now.Unix() >= expires || form.Get("client_id") != g.ClientID ||
-		(form.Get("resource") != "" && form.Get("resource") != g.Resource) {
-		return tokens{}, errGrant
-	}
-	if kind == "authorization_code" && (now.Unix() >= codeExpires || form.Get("redirect_uri") != g.Redirect ||
-		!validVerifier(form.Get("code_verifier")) || challenge(form.Get("code_verifier")) != g.Challenge) {
-		return tokens{}, errGrant
+	if reason := exchangeRefusal(g, form, codeExpires, now); reason != "" {
+		return tokens{}, grantRefusal(reason)
 	}
 	if err := s.allowed(g.Agent); err != nil {
-		return tokens{}, errGrant
+		return tokens{}, policyRefusal(err, "name no longer in the policy")
 	}
-	until := min(now.Add(24*time.Hour).Unix(), expires)
-	out := tokens{
+	until := now.Add(24 * time.Hour).Unix()
+	out = tokens{
 		Access: randomToken(), Refresh: randomToken(), Type: "Bearer",
 		ExpiresIn: until - now.Unix(), Scope: g.Scope,
 	}
@@ -208,19 +226,25 @@ func (s *Server) exchange(form url.Values) (tokens, error) {
 // Authenticate binds a bearer token to exactly one Door agent and resource.
 // Use the returned name as the Principal, never a request-body name.
 func (s *Server) Authenticate(token, resource string) (string, error) {
-	var name string
-	var expires, accessExpires int64
-	err := s.db.QueryRow(`SELECT c.agent,c.expires_at,a.expires_at
+	var name, expectedResource string
+	var accessExpires int64
+	err := s.db.QueryRow(`SELECT c.agent,c.resource,a.expires_at
  FROM access_tokens a JOIN connectors c ON a.agent=c.agent
- WHERE a.hash=? AND c.resource=?`, hash(token), resource).Scan(&name, &expires, &accessExpires)
-	if err != nil {
-		return "", errGrant
+ WHERE a.hash=?`, hash(token)).Scan(&name, &expectedResource, &accessExpires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", grantRefusal("unknown")
 	}
-	if s.now().Unix() >= min(expires, accessExpires) {
-		return "", errGrant
+	if err != nil {
+		return "", grantRefusal("store unavailable")
+	}
+	if resource != expectedResource {
+		return "", grantRefusal("wrong resource")
+	}
+	if s.now().Unix() >= accessExpires {
+		return "", grantRefusal("expired")
 	}
 	if err := s.allowed(name); err != nil {
-		return "", errGrant
+		return "", policyRefusal(err, "not in policy")
 	}
 	return name, nil
 }
@@ -233,17 +257,28 @@ func (s *Server) List() ([]Connector, error) {
 	}
 	out := make([]Connector, 0, len(names))
 	for _, name := range names {
-		c := Connector{Agent: name}
-		var approved, expires int64
-		var active bool
-		err := s.db.QueryRow(`SELECT approved_by,approved_at,client_id,expires_at,refresh_hash IS NOT NULL
- FROM connectors WHERE agent=?`, name).Scan(&c.ApprovedBy, &approved, &c.ClientID, &expires, &active)
+		c := Connector{Agent: name, State: "none"}
+		var approved, codeExpires int64
+		var pending bool
+		var redirect string
+		err := s.db.QueryRow(`SELECT approved_by,approved_at,client_id,refresh_hash IS NOT NULL,code_hash IS NOT NULL,code_expires,redirect
+ FROM connectors WHERE agent=?`, name).Scan(&c.ApprovedBy, &approved, &c.ClientID, &c.Connected, &pending, &codeExpires, &redirect)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 		if err == nil {
-			c.ApprovedAt, c.ExpiresAt = time.Unix(approved, 0).UTC(), time.Unix(expires, 0).UTC()
-			c.Connected = active && s.now().Unix() < expires
+			c.ApprovedAt = time.Unix(approved, 0).UTC()
+			switch {
+			case c.Connected:
+				c.State = "connected"
+			case pending && s.now().Unix() < codeExpires:
+				c.State = "waiting for the app"
+				if openAIURL(redirect) && (!httpsURL(c.ClientID) || openAIURL(c.ClientID)) {
+					c.State = "waiting for ChatGPT"
+				}
+			case pending:
+				c.State = "sign-in expired"
+			}
 		}
 		out = append(out, c)
 	}

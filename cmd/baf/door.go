@@ -46,18 +46,13 @@ func doorCommand(args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "DOOR AGENT\tCONNECTOR\tAPPROVED BY\tAPPROVED AT\tCLIENT ID\tEXPIRES")
+	fmt.Fprintln(tw, "DOOR AGENT\tCONNECTOR\tAPPROVED BY\tAPPROVED AT\tCLIENT ID")
 	for _, c := range list {
-		state, approved, expires := "none", "-", "-"
+		approved := "-"
 		if !c.ApprovedAt.IsZero() {
 			approved = c.ApprovedAt.Local().Format(time.RFC3339)
-			expires = c.ExpiresAt.Local().Format(time.RFC3339)
-			state = "pending or expired"
 		}
-		if c.Connected {
-			state = "connected"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", c.Agent, state, c.ApprovedBy, approved, c.ClientID, expires)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", c.Agent, c.State, c.ApprovedBy, approved, c.ClientID)
 	}
 	return tw.Flush()
 }
