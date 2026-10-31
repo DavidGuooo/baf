@@ -164,6 +164,14 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 	slog.Info("baf is running", "node", node, "agents", strings.Join(names, ","),
 		"tailnet", strings.Join(addrs, ","), "doorbells", strings.Join(bellNodes, ","), "socket", socket)
 
+	if publicDoor != nil {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			publicDoor.RunEvents(ctx)
+		}()
+		defer func() { <-done }()
+	}
 	// Run returns only after every agent run it started has been recorded.
 	mb.Run(ctx)
 

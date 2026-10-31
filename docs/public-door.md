@@ -2,8 +2,9 @@
 
 The Public door lets a ChatGPT Dot use baf as `openai/dot`. The Relay holds its mail,
 checks its permissions in the Tailscale policy, and exposes six MCP tools through
-Funnel. Only agents on the Relay can exchange mail with it in this version. Events
-and file transfers through the door are not implemented yet; the Dot must check `inbox`.
+Funnel. Only agents on the Relay can exchange mail with it in this version. MCP events
+ring the Dot when new mail arrives; `inbox` stays the fallback. File transfers through
+the door are not implemented yet.
 
 These are steps for the owner to run. In the examples, the Relay is **imac**, its
 DNS name is **`imac.example.ts.net`**, and its Tailscale IPv4 address is
@@ -175,7 +176,8 @@ The probe used this flow; labels may differ by account:
    the tailnet. It shows your Tailscale login, the client, and its redirect address.
    Tagged devices cannot approve. Choose a lifetime and select **Allow**.
 5. Check that the connector lists `send`, `request`, `reply`, `inbox`, `read`, and `status`.
-   There are no events yet. A second Door agent needs its own policy entry and connector URL.
+   It should also list `message.created`. A second Door agent needs its own policy entry
+   and connector URL.
 
 A sign-in replaces the earlier connector for that Door agent immediately. For `openai`
 names, the Allow page warns about client or redirect URLs outside `chatgpt.com` /
@@ -195,7 +197,8 @@ in this example. A destination on another machine gets a clear refusal.
 
 Ask the Dot to **request** an answer from `codex`. It gets a receipt immediately; when
 Codex's run finishes, the Result appears in the Dot's **inbox**. **status** reports
-progress and the Result id. The Dot must check inbox until events are added.
+progress and the Result id. Watch for events (below) to receive the whole Result, or
+check inbox for answers.
 
 To ask the Dot something from the Relay:
 
@@ -225,7 +228,59 @@ error and make no mailbox change.
 Files cannot be uploaded or downloaded through these tools. Mail already containing
 files may list their names and sizes, but the door never returns local file paths.
 
-## 7. Manage connectors and turn the door off
+## 7. Watch for events
+
+Ask the Dot:
+
+> Watch baf for message.created events. Check inbox first for any waiting mail. When an
+> event arrives, use its full message in data. For a Request, answer with reply: put
+> data.id in reply_to, your answer in text, and completed in state. Use the message id
+> to avoid answering twice. Use inbox/read if an event is missing. Do not reply to Results.
+
+Then, on the Relay, send a new request:
+
+```bash
+baf request openai/dot --as me "What is 19 times 21?"
+```
+
+With `baf start`, look in `~/.baf/baf.log` (`baf serve` prints to its terminal):
+
+```bash
+tail -f ~/.baf/baf.log | grep 'door events'
+```
+
+`door events subscribed` means the HTTPS callback passed the signed verification
+challenge. `door events delivered` with `status=200` (or another 2xx) means the callback
+accepted an event. Check `baf inbox --as me` for the Dot's Result, ideally without another
+prompt from you. Callback acceptance alone does not prove the Dot started or finished.
+`door events verification failed` means there is no new active subscription;
+`door events retry` means a delivery failed and is waiting to try again. Logs name the
+Door agent and event/subscription ids, never callback URLs, secrets, or message text.
+
+The event's `data` contains `id`, `from` (the Principal), `to`, `kind`, the complete
+`text`, `from_thread`, `to_thread`, `reply_to`, and `state` (the Result's outcome, empty
+otherwise). File metadata is included when present, without local paths or file bytes.
+An event is a wake: it does not mark mail read, change its state, or confirm a handover.
+Use `read` explicitly when you want the sender to see that the message was opened.
+
+Subscriptions last **24 hours by default** when ChatGPT omits `ttlMs`. Explicit lifetimes
+are clamped to one minute through seven days; `ttlMs: null` grants seven days. All are
+capped by the sign-in's expiry. The response's `refreshBefore` tells the client when to
+renew with `events/subscribe`. Renewals verify the callback again. `events/unsubscribe`
+uses the same event name, empty arguments, and webhook delivery URL as subscribe.
+Only public HTTPS callbacks are accepted; redirects are never followed, and each
+callback attempt has a ten-second timeout. Each Door agent's subscriptions are separate.
+
+Subscriptions and pending events survive a restart. Failed deliveries retry after
+2, 4, 8 seconds and so on, capped at five minutes, for up to **one hour from storage**.
+After that baf quietly drops the event; the mail still waits in inbox. HTTP 410 removes
+the subscription; HTTP 413 drops that event. A crash after callback acceptance can
+repeat the same event id. New subscriptions watch new mail; check inbox for older mail.
+A new sign-in or `baf door revoke` removes that Door agent's subscriptions and queued
+events. A callback request already in flight cannot be recalled. Delivery checks the
+current policy too: a removed Door agent receives no further attempts while absent.
+
+## 8. Manage connectors and turn the door off
 
 On the Relay:
 
@@ -237,7 +292,8 @@ baf door revoke openai/dot
 
 These commands use the daemon's owner-only Unix socket. List shows every current
 policy name, connection status, approver, approval time, client id, and expiry.
-Revoke deletes its connector, access tokens, refresh token, and any unexchanged code.
+Revoke deletes its connector, access tokens, refresh token, any unexchanged code,
+subscriptions, and queued events.
 It is safe to repeat and also works after the name is removed from the policy.
 Neither command deletes mailbox messages.
 
@@ -269,13 +325,16 @@ Registration is bounded to 1,000 clients; unconnected registrations older than 3
 are removed on the next registration request.
 
 `door.db`, beside `mailbox.db`, stores connector details and SHA-256 hashes of random
-32-byte codes and tokens. Raw codes and tokens are never saved or logged. The owner's
-identity stays in the local record. Every exchange, refresh, and bearer check consults
+32-byte codes and tokens. It also holds subscriptions, webhook signing secrets, and
+queued event payloads; the file is owner-only. Raw OAuth codes and tokens are never
+saved or logged. The owner's identity stays in the local record. Every exchange,
+refresh, and bearer check consults
 the current policy. Removing a name denies access immediately; revoke it too if its
 old connector must remain unusable after the name is added back.
 
 The endpoint supports MCP `2026-07-28` discovery without `initialize`, and legacy
 `initialize` versions `2025-11-25`, `2025-06-18`, and `2025-03-26`. It handles POST
-requests without sessions or an SSE stream; `events/list` currently returns an empty
-list. Unknown public paths return an empty 404. Protocol mistakes use JSON-RPC errors;
-mailbox refusals use tool results with `isError` and the mailbox's plain reason.
+requests without sessions or an SSE stream; `events/list` advertises `message.created`
+with webhook delivery. Unknown public paths return an empty 404. Protocol mistakes
+use JSON-RPC errors; mailbox refusals use tool results with `isError` and the mailbox's
+plain reason.

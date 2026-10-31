@@ -63,7 +63,30 @@ CREATE TABLE IF NOT EXISTS clients (
  id TEXT PRIMARY KEY,
  metadata TEXT NOT NULL,
  created_at INTEGER NOT NULL
-);`
+);
+CREATE TABLE IF NOT EXISTS subscriptions (
+ id TEXT PRIMARY KEY,
+ agent TEXT NOT NULL REFERENCES connectors(agent) ON DELETE CASCADE,
+ url TEXT NOT NULL,
+ secret TEXT NOT NULL,
+ generation TEXT NOT NULL,
+ after_seq INTEGER NOT NULL,
+ expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS event_deliveries (
+ id TEXT PRIMARY KEY,
+ subscription TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+ body BLOB NOT NULL,
+ attempts INTEGER NOT NULL DEFAULT 0,
+ next_try_at INTEGER NOT NULL,
+ expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_due ON event_deliveries(next_try_at);
+CREATE TABLE IF NOT EXISTS event_position (
+ id INTEGER PRIMARY KEY CHECK (id = 1),
+ seq INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO event_position VALUES (1, 0);`
 
 func openDB(path string) (*sql.DB, error) {
 	// Create with owner-only permissions even when baf's home already exists.

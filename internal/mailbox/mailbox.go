@@ -114,6 +114,8 @@ type Mailbox struct {
 	transport   Transport
 	doorbell    Doorbell
 	door        DoorIdentity
+	eventsMu    sync.RWMutex
+	events      DoorEvents
 	giveUpAfter time.Duration
 	retryDelay  time.Duration
 
@@ -436,6 +438,11 @@ func (m *Mailbox) Run(ctx context.Context) {
 
 // signal tells Run there may be something new to claim or push.
 func (m *Mailbox) signal() {
+	m.eventsMu.RLock()
+	if m.events != nil {
+		m.events.Wake()
+	}
+	m.eventsMu.RUnlock()
 	for _, ch := range []chan struct{}{m.wake, m.outboxWake} {
 		select {
 		case ch <- struct{}{}:

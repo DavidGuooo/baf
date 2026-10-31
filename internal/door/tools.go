@@ -63,7 +63,7 @@ var mcpTools = []map[string]any{
 		messageProperties(), []string{"to", "text"}, false),
 	tool("request", "Ask another agent to do work or answer a question. Returns a receipt immediately; "+
 		"the answer arrives later as a Result in inbox. Check status for progress. "+
-		"Events are not available yet, so check inbox for answers.",
+		"Watch message.created events for the full answer; inbox/read remain the fallback.",
 		messageProperties(), []string{"to", "text"}, false),
 	tool("reply", "Answer a Request you received with a Result: completed, failed or rejected. "+
 		"Name the request in reply_to. Its stored Principal is the recipient. "+

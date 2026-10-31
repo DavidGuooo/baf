@@ -147,7 +147,7 @@ func TestMCPDiscovery(t *testing.T) {
 	var events struct {
 		Events []any `json:"events"`
 	}
-	if err := json.Unmarshal(out.Result, &events); err != nil || events.Events == nil || len(events.Events) != 0 {
+	if err := json.Unmarshal(out.Result, &events); err != nil || len(events.Events) != 1 {
 		t.Fatalf("events = %s, err = %v", out.Result, err)
 	}
 	for _, version := range append(append([]string{}, legacyVersions...), "unsupported") {

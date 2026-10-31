@@ -53,6 +53,8 @@ type Server struct {
 	mailbox              *mailbox.Mailbox
 	writes               map[string][]time.Time
 	fetch                *http.Client
+	callbacks            *http.Client
+	eventWake            chan struct{}
 	now                  func() time.Time
 	mu                   sync.Mutex
 	pending              map[string]approval
@@ -76,12 +78,14 @@ func Open(o Options) (*Server, error) {
 		policy: o.Policy, identity: o.Identity, mailbox: o.Mailbox,
 		writes: map[string][]time.Time{},
 		fetch:  metadataClient(), now: time.Now, pending: map[string]approval{},
+		callbacks: callbackClient(), eventWake: make(chan struct{}, 1),
 	}, nil
 }
 
-// Close closes the connector store and idle metadata connections.
+// Close closes the connector store and idle connections, after RunEvents returns.
 func (s *Server) Close() error {
 	s.fetch.CloseIdleConnections()
+	s.callbacks.CloseIdleConnections()
 	return s.db.Close()
 }
 

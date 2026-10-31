@@ -126,8 +126,9 @@ The Public door serves OAuth sign-in with a tailnet-only Allow page and six MCP 
 `send`, `request`, `reply`, `inbox`, `read`, and `status`. `baf door list` shows connectors;
 `baf door revoke openai/dot` deletes one. See the [Public door setup guide](docs/public-door.md)
 for setup, limits, and token lifetimes. Removing a name from the policy stops its access
-without deleting its stored mail. Events, file transfers through the door, and sending
-between Door agents and other machines remain unsupported.
+without deleting its stored mail. The `message.created` event carries the whole message
+to a subscribed Dot; it does not mark mail read. File transfers through the door and
+sending between Door agents and other machines remain unsupported.
 
 ## Develop
 
