@@ -30,13 +30,13 @@ const verifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
 type fakeIdentity struct {
 	mu              sync.Mutex
 	tagged, removed bool
-	login           string
+	login, node     string
 }
 
 func (f *fakeIdentity) WhoIs(_ context.Context, addr string) (tailnet.Peer, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	p := tailnet.Peer{Node: "owners-phone", Login: f.login}
+	p := tailnet.Peer{Node: f.node, Login: f.login}
 	if f.tagged {
 		p.Tags = []string{"tag:agent"}
 	}
@@ -69,7 +69,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	f := &fakeIdentity{login: "owner@example.com"}
+	f := &fakeIdentity{login: "owner@example.com", node: "owners-phone"}
 	home := t.TempDir()
 	mb, err := mailbox.Open(mailbox.Options{
 		Path: filepath.Join(home, "mailbox.db"), Node: "relay",
@@ -405,7 +405,7 @@ func TestPendingCodes(t *testing.T) {
 
 func TestAllowGuard(t *testing.T) {
 	for _, kind := range []string{
-		"missing", "cookie missing", "wrong person", "tagged on POST", "expired", "replayed", "policy changed",
+		"missing", "cookie missing", "wrong person", "tagged on POST", "expired", "policy changed",
 	} {
 		t.Run(kind, func(t *testing.T) {
 			h := newHarness(t)
@@ -425,11 +425,6 @@ func TestAllowGuard(t *testing.T) {
 				h.identity.mu.Unlock()
 			case "expired":
 				h.clock.Add(600)
-			case "replayed":
-				resp, _ := h.allow(csrf)
-				if resp.StatusCode != 302 {
-					t.Fatal(resp.Status)
-				}
 			case "policy changed":
 				h.identity.mu.Lock()
 				h.identity.removed = true

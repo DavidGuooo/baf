@@ -326,8 +326,14 @@ unexpired access tokens. Existing connectors and tokens keep working: the old
 connector `expires_at` database column is ignored, and new approvals store zero there.
 A token is bound to exactly one Door agent and connector URL.
 
-The Allow form has a one-use guard bound to its browser, person, device, and original
-request, expiring after ten minutes. Pending forms do not survive a restart. Client
+The Allow form has a guard bound to its browser, person, device, and original request,
+expiring after ten minutes. Repeating Allow or Deny returns the first decision's exact
+redirect, even if the later click chooses differently; it never issues another code.
+The guard cookie expires with the form. After the code is exchanged or the form expires,
+a repeat shows a finished page directing the owner back to ChatGPT. Forms and their
+answers stay only in memory and do not survive a restart. Up to 1,024 forms are remembered;
+expired forms lose their saved redirects and are forgotten oldest first when room is
+needed. A forgotten form must be opened again. Client
 metadata is fetched only from public HTTPS addresses on port 443, without redirects.
 Registration is bounded to 1,000 clients; unconnected registrations older than 720 hours
 are removed on the next registration request.
@@ -341,7 +347,8 @@ the current policy. Removing a name denies access immediately; revoke it too if 
 old connector must remain unusable after the name is added back.
 
 Sign-in steps appear in `~/.baf/baf.log`: `door Allow page shown`, `door sign-in allowed`
-or `door sign-in denied`, then `door token issued` or `door token refused`. Allow logs
+or `door sign-in denied`, then `door token issued` or `door token refused`.
+Repeated form submissions log `door sign-in repeated` at info level. Allow logs
 name the Door agent, approver login, and client id; token logs name the Door agent when
 known and the grant type when supported. Refusals give the specific reason, including
 the expected and given resource URLs for a mismatch; the client sees only

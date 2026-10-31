@@ -16,6 +16,9 @@ type approval struct {
 	Grant       grant
 	State, Node string
 	Expires     time.Time
+	Outcome     string
+	Reply       string
+	CodeHash    []byte
 }
 
 var allowPage = template.Must(template.New("allow").Parse(`<!doctype html>
@@ -110,10 +113,20 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 		State: q.Get("state"), Node: peer.Node, Expires: s.now().Add(10 * time.Minute),
 	}
 	s.mu.Lock()
+	oldest := ""
 	for key, p := range s.pending {
 		if !s.now().Before(p.Expires) {
-			delete(s.pending, key)
+			// Keep the identity binding so a late repeat can show a finished
+			// page. Forget expired forms only when room is needed for a new one.
+			p.Reply, p.CodeHash = "", nil
+			s.pending[key] = p
+			if oldest == "" || p.Expires.Before(s.pending[oldest].Expires) {
+				oldest = key
+			}
 		}
+	}
+	if len(s.pending) >= 1024 && oldest != "" {
+		delete(s.pending, oldest)
 	}
 	full := len(s.pending) >= 1024
 	if !full {
@@ -154,7 +167,7 @@ func (s *Server) allow(w http.ResponseWriter, r *http.Request, login, node strin
 	}
 	q := r.PostForm
 	csrf := q.Get("csrf")
-	// Bind this one-use approval to the browser as well as the person and device.
+	// Bind the approval and any repeat to the browser, person and device.
 	cookie, err := r.Cookie(csrfCookie)
 	if err != nil || csrf == "" || subtle.ConstantTimeCompare([]byte(csrf), []byte(cookie.Value)) != 1 {
 		reason = "invalid or missing Allow form guard"
@@ -163,23 +176,44 @@ func (s *Server) allow(w http.ResponseWriter, r *http.Request, login, node strin
 	}
 	key := string(hash(csrf))
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	var ok bool
 	a, ok = s.pending[key]
-	if ok && a.Grant.ApprovedBy == login && a.Node == node {
-		delete(s.pending, key)
-	} else {
-		ok = false
-	}
-	s.mu.Unlock()
-	if !ok || !s.now().Before(a.Expires) {
+	if !ok || a.Grant.ApprovedBy != login || a.Node != node {
 		reason = "sign-in expired or belongs to another device"
 		http.Error(w, "sign-in expired or belongs to another device; open it again", 403)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: csrfCookie, Path: "/", Secure: true, HttpOnly: true,
-		SameSite: http.SameSiteStrictMode, MaxAge: -1,
-	})
+	if a.Outcome != "" {
+		outcome, reason = "repeated", "first decision: "+a.Outcome
+		finished := !s.now().Before(a.Expires) || a.Reply == ""
+		if !finished && len(a.CodeHash) != 0 {
+			var unspent bool
+			if err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM connectors WHERE code_hash=?)`, a.CodeHash).Scan(&unspent); err != nil {
+				reason = "could not check sign-in"
+				http.Error(w, "could not check sign-in", 500)
+				return
+			}
+			finished = !unspent
+		}
+		if finished {
+			a.Reply, a.CodeHash = "", nil
+			s.pending[key] = a
+			reason = "sign-in already finished"
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(`<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Sign-in already finished</title><p>This sign-in already finished. Return to ChatGPT.</p></html>`))
+			return
+		}
+		http.Redirect(w, r, a.Reply, http.StatusFound)
+		return
+	}
+	if !s.now().Before(a.Expires) {
+		reason = "sign-in expired"
+		http.Error(w, "sign-in expired; open it again", 403)
+		return
+	}
 	if err := s.allowed(a.Grant.Agent); err != nil {
 		reason = string(policyRefusal(err, "name no longer in the policy"))
 		http.Error(w, err.Error(), 403)
@@ -204,13 +238,18 @@ func (s *Server) allow(w http.ResponseWriter, r *http.Request, login, node strin
 			return
 		}
 		values.Set("code", code)
+		a.CodeHash = hash(code)
 		outcome, reason = "allowed", "approved"
 	default:
 		http.Error(w, "choose Allow or Deny", 400)
 		return
 	}
 	back.RawQuery = values.Encode()
-	http.Redirect(w, r, back.String(), http.StatusFound)
+	// Save the first answer while holding the lock, so simultaneous submits
+	// cannot replace the connector or issue another code.
+	a.Outcome, a.Reply = outcome, back.String()
+	s.pending[key] = a
+	http.Redirect(w, r, a.Reply, http.StatusFound)
 }
 
 // signinCSP is the Allow page's Content-Security-Policy: no scripts, no
