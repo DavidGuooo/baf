@@ -74,10 +74,10 @@ is set only in your Tailscale policy: paste [`deploy/tailscale-policy.hujson`](d
 into it. Without a matching grant, the receiver refuses the message and the sender gets a
 notice saying why.
 
-`./baf outbox --as me --all` finds ids of mail sent as `me` to other nodes, newest first.
-Without `--all`, only mail still waiting is listed. Without `--as`, the existing outbox
-listing includes every agent's outgoing rows, regardless of `$BAF_AGENT`.
-On the Relay, `./baf outbox --as openai/dot --all` also includes mail the Dot sent to
+`./baf outbox --as me` lists recent mail sent as `me` to other nodes, newest first, so
+you can find an id for `baf status`. `--waiting` lists only mail not yet handed over.
+Without `--as`, it lists every agent's mail, regardless of `$BAF_AGENT`.
+On the Relay, `./baf outbox --as openai/dot` also includes mail the Dot sent to
 agents on the Relay, already handed over when stored: the Dot's node is `openai`.
 
 `./baf start` runs baf in the background (log in `~/.baf/baf.log`) and `./baf stop` stops it.

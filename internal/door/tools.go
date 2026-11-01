@@ -72,9 +72,9 @@ var mcpTools = []map[string]any{
 	tool("inbox", "List your unread messages, oldest first, including answers to your requests. "+
 		"Set all to include messages already read. Listing does not mark mail read; use read for that.",
 		map[string]any{"all": map[string]any{"type": "boolean", "default": false}}, []string{}, true),
-	tool("outbox", "List messages you sent to find an id for status, newest first. "+
-		"Without all, lists only those still waiting to be handed over. Set all to include handed and failed mail.",
-		map[string]any{"all": map[string]any{"type": "boolean", "default": false}}, []string{}, true),
+	tool("outbox", "List messages you recently sent, newest first, to find an id for status. "+
+		"Set waiting to list only those not yet handed over.",
+		map[string]any{"waiting": map[string]any{"type": "boolean", "default": false}}, []string{}, true),
 	tool("read", "Open one message addressed to you and mark it read. This neither deletes it nor answers it. "+
 		"If it is a Request, use reply when you have an answer. Files cannot be downloaded through this door.",
 		map[string]any{"id": stringProperty("ID of a message in your inbox.")}, []string{"id"}, false),
@@ -92,6 +92,7 @@ type toolArguments struct {
 	State      envelope.ResultState `json:"state"`
 	ID         string               `json:"id"`
 	All        bool                 `json:"all"`
+	Waiting    bool                 `json:"waiting"`
 }
 
 func (s *Server) callTool(ctx context.Context, principal, name string, raw map[string]json.RawMessage) any {
@@ -147,7 +148,7 @@ func (s *Server) callTool(ctx context.Context, principal, name string, raw map[s
 		}
 		return toolResult(map[string]any{"messages": items}, err)
 	case "outbox":
-		items, err := s.mailbox.OutboxAs(principal, a.All, 50)
+		items, err := s.mailbox.OutboxAs(principal, !a.Waiting, 50)
 		if items == nil {
 			items = []mailbox.OutItem{}
 		}

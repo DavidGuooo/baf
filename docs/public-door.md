@@ -215,10 +215,10 @@ optional; an explicit `to_thread` must have been shared by the recipient.
 
 **inbox** lists unread mail without changing it; `all: true` includes read mail.
 
-**outbox** lists messages you sent, newest first, so a fresh chat can find an id for
-**status**. Without `all`, it lists only mail waiting to be handed over; use `all: true`
-to include handed and failed mail. It returns up to 50 `OutItem` entries in `messages`,
-the same entries as `baf outbox --as openai/dot --all --json` on the Relay.
+**outbox** lists messages you recently sent, newest first, so a fresh chat can find an
+id for **status**. `waiting: true` lists only mail not yet handed over. It returns up to
+50 `OutItem` entries in `messages`, the same entries as
+`baf outbox --as openai/dot --json` on the Relay.
 Mail to agents on the Relay counts too: it left the Door agent's vendor node and is
 listed as `handed` at its storage time, with the Relay in `via`. Forwarded mail keeps
 its recorded handover state. Mail within the same vendor node stays out of this view.
@@ -457,7 +457,7 @@ on the Relay (see [Grok setup](setup-grokbot.md)):
    If the request has a `from_thread`, include `--to-thread <from_thread>` in the
    answer. The Dot receives an event and its request's `status` names the Result.
    `baf status <result-id>` on grokbot shows handover to the Relay and whether the
-   Dot opened the Result. `baf outbox --all` keeps `openai/dot` as the destination
+   Dot opened the Result. `baf outbox` keeps `openai/dot` as the destination
    and shows the Relay in `VIA`.
 3. On grokbot, send a request the other way:
 

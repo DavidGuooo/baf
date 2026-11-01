@@ -475,7 +475,7 @@ func TestMCPOutboxScopedToToken(t *testing.T) {
 	result := decodeResult[struct {
 		Messages []mailbox.OutItem `json:"messages"`
 	}](t, h.call("openai/dot", dot.Access, "outbox", map[string]any{
-		"all": true, "as": "openai/other", "origin": "openai/other",
+		"as": "openai/other", "origin": "openai/other",
 	}))
 	items := result.Messages
 	if len(items) != 1 || items[0].ID != mine.ID || items[0].Origin != "openai/dot" || items[0].State != "handed" {
@@ -483,9 +483,9 @@ func TestMCPOutboxScopedToToken(t *testing.T) {
 	}
 	waiting := decodeResult[struct {
 		Messages []mailbox.OutItem `json:"messages"`
-	}](t, h.call("openai/dot", dot.Access, "outbox", map[string]any{}))
+	}](t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"waiting": true}))
 	if len(waiting.Messages) != 0 {
 		t.Fatalf("already handed mail = %+v", waiting)
 	}
-	wantToolError(t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"all": "yes"}), "bad tool arguments")
+	wantToolError(t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"waiting": "yes"}), "bad tool arguments")
 }

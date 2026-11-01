@@ -85,7 +85,7 @@ func TestMCPThroughRelayAndResultEvent(t *testing.T) {
 	outbox := decodeResult[struct {
 		Messages []mailbox.OutItem `json:"messages"`
 	}](t,
-		h.call("openai/dot", tok.Access, "outbox", map[string]any{"all": true}))
+		h.call("openai/dot", tok.Access, "outbox", map[string]any{}))
 	if len(outbox.Messages) != 1 || outbox.Messages[0].ID != req.ID || outbox.Messages[0].State != "handed" || outbox.Messages[0].Via != "grokbot" {
 		t.Fatalf("forwarded outbox = %+v", outbox)
 	}
