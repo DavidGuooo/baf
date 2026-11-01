@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -460,11 +462,32 @@ func scanOutItem(s scanner) (OutItem, envelope.Envelope, error) {
 // Outbox lists outgoing messages, newest first. Unless all is true it lists
 // only those still waiting.
 func (m *Mailbox) Outbox(all bool, limit int) ([]OutItem, error) {
-	q := `SELECT ` + outItemColumns + ` FROM outbox`
-	if !all {
-		q += ` WHERE state = 'waiting'`
+	return m.OutboxAs("", all, limit)
+}
+
+// OutboxAs filters by the agent that sent the mail. A Door agent's node is
+// its vendor, so mail it sent to this Relay counts as handed over too.
+func (m *Mailbox) OutboxAs(agentName string, all bool, limit int) ([]OutItem, error) {
+	var from Principal
+	if strings.Contains(agentName, "/") && m.door != nil {
+		peer, err := m.doorPeer()
+		if err != nil {
+			return nil, err
+		}
+		if peer.IsRelay() {
+			if !slices.Contains(peer.DoorAgents(), agentName) {
+				return nil, reject("the Tailscale policy does not list %q as a Door agent on this Relay", agentName)
+			}
+			from, _ = envelope.ParseAddress(agentName) // DoorAgents returns valid addresses.
+		}
 	}
-	rows, err := m.db.Query(q+` ORDER BY seq DESC LIMIT ?`, limit)
+	q := `SELECT ` + outItemColumns + ` FROM outbox WHERE (? = '' OR
+		(COALESCE(json_extract(envelope, '$.origin'), '') = '' AND json_extract(envelope, '$.from_agent') = ?) OR
+		json_extract(envelope, '$.origin') = ?)`
+	if !all {
+		q += ` AND state = 'waiting'`
+	}
+	rows, err := m.db.Query(q+` ORDER BY seq DESC LIMIT ?`, agentName, agentName, agentName, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -477,5 +500,42 @@ func (m *Mailbox) Outbox(all bool, limit int) ([]OutItem, error) {
 		}
 		out = append(out, it)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close() // Release the connection before reading locally held mail.
+	if from.Node == "" || !all {
+		return out, nil
+	}
+	rows, err = m.db.Query(`SELECT envelope, received_at FROM messages
+		WHERE sender_node = ? AND from_agent = ?
+		AND substr(json_extract(envelope, '$.to'), 1, instr(json_extract(envelope, '$.to'), '/') - 1) != ?
+		ORDER BY received_at DESC, seq DESC LIMIT ?`, from.Node, from.Agent, from.Node, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		var received int64
+		if err := rows.Scan(&raw, &received); err != nil {
+			return nil, err
+		}
+		var env envelope.Envelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return nil, err
+		}
+		stored := time.UnixMilli(received)
+		out = append(out, OutItem{ID: env.ID, To: env.To, Kind: string(env.Kind),
+			FromAgent: from.Agent, Origin: agentName, Via: m.node, State: "handed",
+			CreatedAt: stored, DoneAt: &stored})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(out, func(a, b OutItem) int { return b.CreatedAt.Compare(a.CreatedAt) })
+	if limit >= 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }

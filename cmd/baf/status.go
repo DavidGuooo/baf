@@ -81,10 +81,14 @@ func printStatus(w io.Writer, s mailbox.SentStatus, now time.Time) {
 	case p == nil:
 	case p.State == "inbox":
 		_, agentName, _ := strings.Cut(p.To, "/")
+		told := ""
+		if p.NotifiedAt != nil {
+			told = "; told " + stamp(*p.NotifiedAt)
+		}
 		if p.ReadAt != nil {
-			line("receiver", "in %s's inbox; opened %s", agentName, stamp(*p.ReadAt))
+			line("receiver", "in %s's inbox%s; opened %s", agentName, told, stamp(*p.ReadAt))
 		} else {
-			line("receiver", "in %s's inbox; not opened yet", agentName)
+			line("receiver", "in %s's inbox%s; not opened yet", agentName, told)
 		}
 	case p.Run == nil:
 		line("receiver", "stored %s; its run has not started (another run may be using its thread)", stamp(p.StoredAt))

@@ -23,8 +23,9 @@ type Progress struct {
 	// State is the message's state here: pending (stored, its run not
 	// started yet), running, done (its run ended), or inbox (an agent baf
 	// doesn't run, which reads its own mail).
-	State  string     `json:"state"`
-	ReadAt *time.Time `json:"read_at,omitempty"` // first opened: by its run, or with `baf read`
+	State      string     `json:"state"`
+	NotifiedAt *time.Time `json:"notified_at,omitempty"` // first accepted Door event
+	ReadAt     *time.Time `json:"read_at,omitempty"`     // first opened: by its run, or with `baf read`
 
 	Run *RunProgress `json:"run,omitempty"` // once a run has started
 }
@@ -62,18 +63,18 @@ func (m *Mailbox) progressVia(from Principal, id, relay string) (Progress, error
 	var (
 		p                       Progress
 		received                int64
-		readAt                  sql.NullInt64
+		readAt, notifiedAt      sql.NullInt64
 		runState, thread, doing sql.NullString
 		started, ended, doingAt sql.NullInt64
 	)
-	err := m.db.QueryRow(`SELECT json_extract(m.envelope, '$.to'), COALESCE(json_extract(m.envelope, '$.origin'), ''), m.state, m.received_at, m.read_at,
+	err := m.db.QueryRow(`SELECT json_extract(m.envelope, '$.to'), COALESCE(json_extract(m.envelope, '$.origin'), ''), m.state, m.received_at, m.read_at, m.notified_at,
 			r.state, r.thread_id, r.started_at, r.ended_at, r.doing, r.doing_at
 		FROM messages m LEFT JOIN runs r ON r.message_seq = m.seq
 		WHERE m.sender_node = ? AND m.id = ?
 		AND (? = '' OR m.from_agent = ?)
 		AND (? = '' OR m.forwarding_node = ?)
 		ORDER BY r.id DESC LIMIT 1`, from.Node, id, from.Agent, from.Agent, relay, relay).Scan(
-		&p.To, &p.Origin, &p.State, &received, &readAt, &runState, &thread, &started, &ended, &doing, &doingAt)
+		&p.To, &p.Origin, &p.State, &received, &readAt, &notifiedAt, &runState, &thread, &started, &ended, &doing, &doingAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Progress{}, ErrNotFound
 	}
@@ -81,6 +82,7 @@ func (m *Mailbox) progressVia(from Principal, id, relay string) (Progress, error
 		return Progress{}, err
 	}
 	p.ID = id
+	p.NotifiedAt = timePtr(notifiedAt)
 	p.StoredAt, p.ReadAt = time.UnixMilli(received), timePtr(readAt)
 	if runState.Valid {
 		p.Run = &RunProgress{

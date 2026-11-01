@@ -138,7 +138,7 @@ func HandlerWithDoor(mb *mailbox.Mailbox, agents []string, d *door.Server) http.
 		if err != nil || limit <= 0 {
 			limit = 50
 		}
-		items, err := mb.Outbox(r.URL.Query().Get("all") == "1", limit)
+		items, err := mb.OutboxAs(r.URL.Query().Get("agent"), r.URL.Query().Get("all") == "1", limit)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError{Error: err.Error()})
 			return

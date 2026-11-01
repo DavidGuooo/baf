@@ -8,7 +8,7 @@
 //	baf inbox [--all]                 list unread messages
 //	baf read ID                       show one message and mark it read
 //	baf status ID                     follow a message you sent: handed over, running, answered
-//	baf outbox [--all]                list messages waiting to go to other machines
+//	baf outbox [--as NAME] [--all]     list messages waiting to leave the sender's node
 //	baf runs                          list recent agent runs
 //	baf wait ID...                    for routine runs: wait for mail to arrive
 //	baf flush                         for bot runs: wait for your sent mail to leave
@@ -49,7 +49,7 @@ Usage:
   baf inbox [--all]              list unread messages on this machine (--all: read ones too)
   baf read ID                    show one message and mark it read
   baf status ID                  follow a message you sent: handed over, running (and doing what), answered
-  baf outbox [--all]             messages waiting to go to other machines (--all: sent ones too)
+  baf outbox [--as NAME] [--all]  mail leaving the sender's node (--all: sent ones too)
   baf runs [--limit N]           list recent agent runs
   baf door list [--json]         list policy Door agents and their connectors
   baf door revoke VENDOR/NAME    delete that Door agent's connector and tokens
@@ -70,6 +70,9 @@ Options for send and request:
   --kind KIND        notice, request or result (send only)
   --reply-to ID      the request a result answers
   --state STATE      a result's outcome: completed (default), failed, rejected, unknown
+
+Options for outbox:
+  --as NAME          only mail sent as NAME (no default filter)
 
 Options for inbox, read and wait:
   --as NAME          only messages addressed to NAME (default $BAF_AGENT; none = every agent's)
@@ -321,6 +324,7 @@ func printItem(w io.Writer, it mailbox.Item) {
 
 func outbox(args []string) error {
 	fs := flag.NewFlagSet("outbox", flag.ExitOnError)
+	as := fs.String("as", "", "")
 	all := fs.Bool("all", false, "")
 	asJSON := fs.Bool("json", false, "")
 	if _, err := parse(fs, args); err != nil {
@@ -330,7 +334,7 @@ func outbox(args []string) error {
 	if err != nil {
 		return err
 	}
-	items, err := c.Outbox(*all)
+	items, err := c.Outbox(*as, *all)
 	if err != nil {
 		return err
 	}

@@ -74,6 +74,12 @@ is set only in your Tailscale policy: paste [`deploy/tailscale-policy.hujson`](d
 into it. Without a matching grant, the receiver refuses the message and the sender gets a
 notice saying why.
 
+`./baf outbox --as me --all` finds ids of mail sent as `me` to other nodes, newest first.
+Without `--all`, only mail still waiting is listed. Without `--as`, the existing outbox
+listing includes every agent's outgoing rows, regardless of `$BAF_AGENT`.
+On the Relay, `./baf outbox --as openai/dot --all` also includes mail the Dot sent to
+agents on the Relay, already handed over when stored: the Dot's node is `openai`.
+
 `./baf start` runs baf in the background (log in `~/.baf/baf.log`) and `./baf stop` stops it.
 
 ## Agents
@@ -122,15 +128,16 @@ automatic Results, stays in the Relay's inbox for `openai/dot`; it never starts 
 run. A Door agent's `door` entry limits which agents on the Relay it may message. The
 Relay's own `to` permission does not give extra permission to a Door agent.
 
-The Public door serves OAuth sign-in with a tailnet-only Allow page and six MCP tools:
-`send`, `request`, `reply`, `inbox`, `read`, and `status`. `baf door list` shows connectors;
-`baf door revoke openai/dot` deletes one. See the [Public door setup guide](docs/public-door.md)
+The Public door serves OAuth sign-in with a tailnet-only Allow page and seven MCP tools:
+`send`, `request`, `reply`, `inbox`, `outbox`, `read`, and `status`. `baf door list` shows
+connectors; `baf door revoke openai/dot` deletes one. See the [Public door setup guide](docs/public-door.md)
 for setup, limits, and sign-in logs. Connectors do not expire; a new sign-in replaces the
 previous connector. Access tokens last one day, and refresh tokens rotate on use.
 Removing a name from the policy stops its access without deleting its stored mail.
-The `message.created` event carries the whole message
-to a subscribed Dot; it does not mark mail read. Door agents can also exchange mail
-with agents on other tailnet machines through the Relay. Receivers check the Door
+The `message.created` event carries message ids, sender, recipient and kind to a
+subscribed Dot. The Dot calls `read` with the id before acting, and `reply` for a Request.
+The first accepted callback appears as "told" in status; only `read` marks the mail opened.
+Door agents can also exchange mail with agents on other tailnet machines through the Relay. Receivers check the Door
 agent's `door` permission, and replies find the Relay through its policy grant.
 See [cross-machine setup](docs/public-door.md#door-agents--other-machines).
 File transfers through MCP remain unsupported.

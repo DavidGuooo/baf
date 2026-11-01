@@ -82,14 +82,33 @@ func TestMCPThroughRelayAndResultEvent(t *testing.T) {
 		s := decodeResult[mailbox.SentStatus](t, h.call("openai/dot", tok.Access, "status", map[string]any{"id": req.ID}))
 		return s.Handover != nil && s.Handover.State == "handed" && s.Receiver != nil
 	})
+	outbox := decodeResult[struct {
+		Messages []mailbox.OutItem `json:"messages"`
+	}](t,
+		h.call("openai/dot", tok.Access, "outbox", map[string]any{"all": true}))
+	if len(outbox.Messages) != 1 || outbox.Messages[0].ID != req.ID || outbox.Messages[0].State != "handed" || outbox.Messages[0].Via != "grokbot" {
+		t.Fatalf("forwarded outbox = %+v", outbox)
+	}
 	result, err := grok.Send(envelope.Envelope{Kind: envelope.Result, FromAgent: "tokdev", To: "openai/dot", ReplyTo: req.ID, ToThread: "dot-thread", Body: envelope.Body{Text: "42", State: envelope.Completed}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	event := takeEvent(t, cb)
-	if event.Data.ID != result.ID || event.Data.From != "grokbot/tokdev" || event.Data.Text != "42" {
+	if event.Data.ID != result.ID || event.Data.From != "grokbot/tokdev" || event.Data.ReplyTo != req.ID {
 		t.Fatalf("event = %+v", event)
 	}
+	await(func() bool {
+		status, err := grok.SentStatus(ctx, result.ID)
+		return err == nil && status.Receiver != nil && status.Receiver.NotifiedAt != nil && status.Receiver.ReadAt == nil
+	})
+	opened := decodeResult[mailbox.Item](t, h.call("openai/dot", tok.Access, "read", map[string]any{"id": result.ID}))
+	if opened.Message.Body.Text != "42" || !opened.Read {
+		t.Fatalf("read = %+v", opened)
+	}
+	await(func() bool {
+		status, err := grok.SentStatus(ctx, result.ID)
+		return err == nil && status.Receiver != nil && status.Receiver.NotifiedAt != nil && status.Receiver.ReadAt != nil
+	})
 	s := decodeResult[mailbox.SentStatus](t, h.call("openai/dot", tok.Access, "status", map[string]any{"id": req.ID}))
 	if s.Result == nil || s.Result.ID != result.ID {
 		t.Fatalf("status = %+v", s)

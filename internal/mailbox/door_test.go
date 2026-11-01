@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DavidGuooo/baf/internal/agent"
 	"github.com/DavidGuooo/baf/internal/envelope"
@@ -363,5 +365,87 @@ func TestForwardingNodeSurvivesRestart(t *testing.T) {
 		if _, err := reopened.ForwardedProgress(relay, "openai/dot", env.ID); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("progress leaked to %s: %v", relay, err)
 		}
+	}
+}
+
+func TestOutboxAs(t *testing.T) {
+	mb, policy, _ := doorMailbox(t, true)
+	policy.peer.Grants[0].Door["anthropic/dot"] = []string{"me"}
+	policy.peer.Grants[0].Door["openai/other"] = []string{"me"}
+	policy.peer.Grants[0].Door["openai/dot"] = []string{"me", "openai/other"}
+	now := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	mb.now = func() time.Time { return now }
+	send := func(id, as, to string) Receipt {
+		t.Helper()
+		now = now.Add(time.Second)
+		env := envelope.Envelope{ID: id, Kind: envelope.Notice, FromAgent: as, To: to}
+		var r Receipt
+		var err error
+		if strings.Contains(as, "/") {
+			r, err = mb.FromDoor(as, env)
+		} else {
+			r, err = mb.Send(env)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	send("plain-local", "me", "box/codex")
+	send("plain-remote", "me", "other-node/me")
+	send("same-name", "dot", "other-node/me")
+	send("other-vendor", "anthropic/dot", "box/me")
+	send("other-door", "openai/other", "box/me")
+	send("other-forwarded", "anthropic/dot", "other-node/me")
+	send("handed", "openai/dot", "other-node/me")
+	if _, err := mb.db.Exec(`UPDATE outbox SET state='handed', done_at=created_at WHERE id='handed'`); err != nil {
+		t.Fatal(err)
+	}
+	local := send("local", "openai/dot", "box/me")
+	send("waiting", "openai/dot", "other-node/me")
+	send("same-vendor", "openai/dot", "openai/other")
+	for _, tc := range []struct {
+		as    string
+		all   bool
+		limit int
+		ids   []string
+	}{
+		{"me", true, 50, []string{"plain-remote"}},
+		{"dot", true, 50, []string{"same-name"}},
+		{"openai/dot", true, 50, []string{"waiting", "local", "handed"}},
+		{"openai/dot", true, 2, []string{"waiting", "local"}},
+		{"openai/dot", false, 50, []string{"waiting"}},
+		{"", true, 50, []string{"waiting", "handed", "other-forwarded", "same-name", "plain-remote"}},
+	} {
+		items, err := mb.OutboxAs(tc.as, tc.all, tc.limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, it := range items {
+			ids = append(ids, it.ID)
+			if it.ID == local.ID && (it.State != "handed" || it.Via != "box" || it.Origin != "openai/dot" ||
+				!it.CreatedAt.Equal(local.StoredAt) || it.DoneAt == nil || !it.DoneAt.Equal(local.StoredAt)) {
+				t.Fatalf("local handover = %+v", it)
+			}
+		}
+		if !slices.Equal(ids, tc.ids) {
+			t.Fatalf("outbox %q all=%v limit=%d: %v, want %v", tc.as, tc.all, tc.limit, ids, tc.ids)
+		}
+	}
+	_, err := mb.OutboxAs("openai/missing", false, 50)
+	wantDoorRejection(t, err, "does not list")
+	plain, _, _ := doorMailbox(t, false)
+	if items, err := plain.OutboxAs("openai/dot", true, 50); err != nil || len(items) != 0 {
+		t.Fatalf("non-Relay outbox = %+v, %v", items, err)
+	}
+}
+
+func TestOutboxAsOnNodeWithoutRelayGrant(t *testing.T) {
+	mb, policy, _ := doorMailbox(t, true)
+	policy.peer.Grants[0].Relay = false
+	items, err := mb.OutboxAs("openai/missing", true, 50)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("outbox on ordinary node: %+v, %v", items, err)
 	}
 }

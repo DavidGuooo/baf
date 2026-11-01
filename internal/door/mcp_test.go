@@ -128,13 +128,13 @@ func TestMCPDiscovery(t *testing.T) {
 	if err := json.Unmarshal(out.Result, &list); err != nil {
 		t.Fatal(err)
 	}
-	if list.ResultType != "complete" || len(list.Tools) != 6 {
+	if list.ResultType != "complete" || len(list.Tools) != 7 {
 		t.Fatalf("tools = %s", out.Result)
 	}
-	for i, name := range []string{"send", "request", "reply", "inbox", "read", "status"} {
+	for i, name := range []string{"send", "request", "reply", "inbox", "outbox", "read", "status"} {
 		tool := list.Tools[i]
 		if tool.Name != name || tool.Description == "" || len(tool.InputSchema) == 0 ||
-			tool.Annotations["readOnlyHint"] != (name == "inbox" || name == "status") {
+			tool.Annotations["readOnlyHint"] != (name == "inbox" || name == "outbox" || name == "status") {
 			t.Fatalf("bad tool: %+v", tool)
 		}
 		for _, key := range []string{"destructiveHint", "openWorldHint"} {
@@ -460,4 +460,32 @@ func TestMCPProtocolErrorsAndLimits(t *testing.T) {
 		map[string]any{"to": "me", "text": strings.Repeat("x", maxText+1)}), "text exceeds")
 	h.bearer("openai/dot", "", 401)
 	h.bearer("openai/other", tok.Access, 401)
+}
+
+func TestMCPOutboxScopedToToken(t *testing.T) {
+	h := newHarness(t)
+	dot := h.token(codeForm(h.code("openai/dot")), 200)
+	other := h.token(codeForm(h.code("openai/other")), 200)
+	mine := decodeResult[mailbox.Receipt](t, h.call("openai/dot", dot.Access, "send", map[string]any{"to": "me", "text": "mine"}))
+	decodeResult[mailbox.Receipt](t, h.call("openai/other", other.Access, "send", map[string]any{"to": "me", "text": "theirs"}))
+	// Outbox is read-only even after exhausting the write budget.
+	for range writesPerMinute {
+		h.s.allowWrite("openai/dot")
+	}
+	result := decodeResult[struct {
+		Messages []mailbox.OutItem `json:"messages"`
+	}](t, h.call("openai/dot", dot.Access, "outbox", map[string]any{
+		"all": true, "as": "openai/other", "origin": "openai/other",
+	}))
+	items := result.Messages
+	if len(items) != 1 || items[0].ID != mine.ID || items[0].Origin != "openai/dot" || items[0].State != "handed" {
+		t.Fatalf("outbox = %+v", items)
+	}
+	waiting := decodeResult[struct {
+		Messages []mailbox.OutItem `json:"messages"`
+	}](t, h.call("openai/dot", dot.Access, "outbox", map[string]any{}))
+	if len(waiting.Messages) != 0 {
+		t.Fatalf("already handed mail = %+v", waiting)
+	}
+	wantToolError(t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"all": "yes"}), "bad tool arguments")
 }

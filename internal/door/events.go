@@ -26,45 +26,31 @@ const maxSubscriptionTTL = 7 * 24 * time.Hour
 
 var mcpEvents = []map[string]any{{
 	"name": eventName,
-	"description": "New mail for you, including Results. Carries the whole message so you can answer without fetching. " +
-		"Delivery does not mark it read. Events may repeat; use id to avoid answering twice. inbox/read remain the fallback.",
+	"description": "New mail for you, including Results. Carries message ids, sender, recipient and kind. " +
+		"Call read with id to open the message, then act; use reply for a Request. " +
+		"Delivery does not mark it read. Events may repeat; use id to avoid answering twice. Check inbox for missed mail.",
 	"delivery":    []string{"webhook"},
 	"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
 	"payloadSchema": map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":          stringProperty("Message id; use as reply_to when answering a Request."),
-			"from":        stringProperty("The stored Principal: node/agent."),
-			"to":          stringProperty("Your Door agent address."),
-			"kind":        map[string]any{"type": "string", "enum": []string{"notice", "request", "result"}},
-			"text":        stringProperty("The whole message text."),
-			"from_thread": stringProperty("The sender's thread id, or empty."),
-			"to_thread":   stringProperty("Your thread id, or empty."),
-			"reply_to":    stringProperty("The Request id this Result answers, or empty."),
-			"state":       map[string]any{"type": "string", "enum": []string{"", "completed", "failed", "rejected", "unknown"}},
-			"files": map[string]any{"type": "array", "items": map[string]any{
-				"type": "object", "properties": map[string]any{
-					"name": map[string]string{"type": "string"}, "sha256": map[string]string{"type": "string"},
-					"size": map[string]string{"type": "integer"},
-				}, "required": []string{"name", "sha256", "size"}, "additionalProperties": false,
-			}},
+			"id":       stringProperty("Message id; call read with this id to open it."),
+			"from":     stringProperty("The stored Principal: node/agent."),
+			"to":       stringProperty("Your Door agent address."),
+			"kind":     map[string]any{"type": "string", "enum": []string{"notice", "request", "result"}},
+			"reply_to": stringProperty("The Request id this Result answers, when set."),
 		},
-		"required":             []string{"id", "from", "to", "kind", "text", "from_thread", "to_thread", "reply_to", "state"},
+		"required":             []string{"id", "from", "to", "kind"},
 		"additionalProperties": false,
 	},
 }}
 
 type eventMessage struct {
-	ID         string               `json:"id"`
-	From       string               `json:"from"`
-	To         string               `json:"to"`
-	Kind       envelope.Kind        `json:"kind"`
-	Text       string               `json:"text"`
-	FromThread string               `json:"from_thread"`
-	ToThread   string               `json:"to_thread"`
-	ReplyTo    string               `json:"reply_to"`
-	State      envelope.ResultState `json:"state"`
-	Files      []envelope.File      `json:"files,omitempty"`
+	ID      string        `json:"id"`
+	From    string        `json:"from"`
+	To      string        `json:"to"`
+	Kind    envelope.Kind `json:"kind"`
+	ReplyTo string        `json:"reply_to,omitempty"`
 }
 
 type event struct {

@@ -633,3 +633,20 @@ func TestFileHandlerChecks(t *testing.T) {
 		})
 	}
 }
+
+func TestProgressWithoutNotifiedAt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"progress":{"id":"old","to":"grokbot/tokdev","state":"inbox","stored_at":"2026-11-01T00:00:00Z"}}`)
+	}))
+	defer srv.Close()
+	ap := netip.MustParseAddrPort(srv.Listener.Addr().String())
+	c := &Client{
+		Lookup: func(context.Context, string) (netip.Addr, bool, error) { return ap.Addr(), true, nil },
+		Port:   int(ap.Port()),
+	}
+	p, err := c.Progress(context.Background(), "grokbot", "old", "")
+	if err != nil || p.ID != "old" || p.State != "inbox" || p.NotifiedAt != nil {
+		t.Fatalf("older progress: %+v, %v", p, err)
+	}
+}

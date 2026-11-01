@@ -93,10 +93,10 @@ func (c *Client) SentStatus(id string) (mailbox.SentStatus, error) {
 	return s, c.do("GET", "/v1/sent/"+url.PathEscape(id), nil, &s)
 }
 
-func (c *Client) Outbox(all bool) ([]mailbox.OutItem, error) {
-	path := "/v1/outbox"
+func (c *Client) Outbox(agentName string, all bool) ([]mailbox.OutItem, error) {
+	path := "/v1/outbox?agent=" + url.QueryEscape(agentName)
 	if all {
-		path += "?all=1"
+		path += "&all=1"
 	}
 	var items []mailbox.OutItem
 	return items, c.do("GET", path, nil, &items)

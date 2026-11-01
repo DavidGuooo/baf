@@ -63,7 +63,7 @@ var mcpTools = []map[string]any{
 		messageProperties(), []string{"to", "text"}, false),
 	tool("request", "Ask another agent to do work or answer a question. Returns a receipt immediately; "+
 		"the answer arrives later as a Result in inbox. Check status for progress. "+
-		"Watch message.created events for the full answer; inbox/read remain the fallback.",
+		"Watch message.created events, then call read with the message id for the full answer; check inbox for missed mail.",
 		messageProperties(), []string{"to", "text"}, false),
 	tool("reply", "Answer a Request you received with a Result: completed, failed or rejected. "+
 		"Name the request in reply_to. Its stored Principal is the recipient. "+
@@ -72,12 +72,15 @@ var mcpTools = []map[string]any{
 	tool("inbox", "List your unread messages, oldest first, including answers to your requests. "+
 		"Set all to include messages already read. Listing does not mark mail read; use read for that.",
 		map[string]any{"all": map[string]any{"type": "boolean", "default": false}}, []string{}, true),
+	tool("outbox", "List messages you sent to find an id for status, newest first. "+
+		"Without all, lists only those still waiting to be handed over. Set all to include handed and failed mail.",
+		map[string]any{"all": map[string]any{"type": "boolean", "default": false}}, []string{}, true),
 	tool("read", "Open one message addressed to you and mark it read. This neither deletes it nor answers it. "+
 		"If it is a Request, use reply when you have an answer. Files cannot be downloaded through this door.",
 		map[string]any{"id": stringProperty("ID of a message in your inbox.")}, []string{"id"}, false),
 	tool("status", "Check a message you sent: whether it was opened, any run progress, and the Result id "+
 		"once a request is answered. Use inbox or read to get the Result's full text.",
-		map[string]any{"id": stringProperty("ID from a receipt for a message you sent.")}, []string{"id"}, true),
+		map[string]any{"id": stringProperty("ID from outbox or a receipt for a message you sent.")}, []string{"id"}, true),
 }
 
 type toolArguments struct {
@@ -126,7 +129,7 @@ func (s *Server) callTool(ctx context.Context, principal, name string, raw map[s
 	if s.mailbox == nil {
 		return toolResult(nil, errors.New("the Public door has no mailbox"))
 	}
-	if name != "inbox" && name != "status" && !s.allowWrite(principal) {
+	if name != "inbox" && name != "outbox" && name != "status" && !s.allowWrite(principal) {
 		return toolResult(nil, errors.New("too many writes: a Door agent may write 30 times a minute; "+
 			"try again shortly"))
 	}
@@ -141,6 +144,12 @@ func (s *Server) callTool(ctx context.Context, principal, name string, raw map[s
 		}
 		for i := range items {
 			items[i].Files = nil // Local paths are useful only to agents on the Relay.
+		}
+		return toolResult(map[string]any{"messages": items}, err)
+	case "outbox":
+		items, err := s.mailbox.OutboxAs(principal, a.All, 50)
+		if items == nil {
+			items = []mailbox.OutItem{}
 		}
 		return toolResult(map[string]any{"messages": items}, err)
 	case "read":

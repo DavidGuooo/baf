@@ -65,9 +65,23 @@ func newEventCallback(t *testing.T, s *Server) *eventCallback {
 			writeJSON(w, 200, map[string]string{"challenge": challenge.Challenge})
 			return
 		}
+		var wire struct {
+			Data map[string]json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(body, &wire); err != nil {
+			t.Error(err)
+		}
+		for key := range wire.Data {
+			if key != "id" && key != "from" && key != "to" && key != "kind" && key != "reply_to" {
+				t.Errorf("unexpected event field %q", key)
+			}
+		}
 		var e event
 		if err := json.Unmarshal(body, &e); err != nil {
 			t.Error(err)
+		}
+		if _, ok := wire.Data["reply_to"]; ok && e.Data.ReplyTo == "" {
+			t.Error("empty reply_to must be omitted")
 		}
 		if r.Header.Get("webhook-id") != e.ID {
 			t.Error("webhook id differs from event id")
@@ -278,26 +292,29 @@ func noEvent(t *testing.T, cb *eventCallback) {
 	}
 }
 
-func TestEventWholeMessageAndNoRead(t *testing.T) {
+func TestEventIDsAndNoRead(t *testing.T) {
 	h := newHarness(t)
 	tok := h.token(codeForm(h.code("openai/dot")), 200)
 	cb := newEventCallback(t, h.s)
 	h.subscribeCallback(cb, tok.Access)
 	request := decodeResult[mailbox.Receipt](t, h.call("openai/dot", tok.Access, "request",
 		map[string]any{"to": "codex", "text": "question", "from_thread": "dot-thread"}))
+	f, err := h.mailbox.AddFile("answer.txt", strings.NewReader("file bytes"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	text := strings.Repeat("a whole answer, not a preview. ", 100)
 	env := envelope.Envelope{ID: envelope.NewID(), Kind: envelope.Result, FromAgent: "codex", To: "openai/dot",
 		FromThread: "codex-thread", ToThread: "dot-thread", ReplyTo: request.ID,
-		Body: envelope.Body{Text: text, State: envelope.Completed}}
+		Body: envelope.Body{Text: text, State: envelope.Completed, Files: []envelope.File{f}}}
 	if _, err := h.mailbox.Send(env); err != nil {
 		t.Fatal(err)
 	}
 	h.pumpEvents()
 	e := takeEvent(t, cb)
 	if e.Name != eventName || e.Timestamp.IsZero() || e.Data.ID != env.ID || e.Data.From != "relay/codex" ||
-		e.Data.To != "openai/dot" || e.Data.Kind != envelope.Result || e.Data.Text != text ||
-		e.Data.FromThread != "codex-thread" || e.Data.ToThread != "dot-thread" ||
-		e.Data.ReplyTo != request.ID || e.Data.State != envelope.Completed {
+		e.Data.To != "openai/dot" || e.Data.Kind != envelope.Result ||
+		e.Data.ReplyTo != request.ID {
 		t.Fatalf("incomplete event: %+v", e)
 	}
 	items, err := h.mailbox.DoorInbox("openai/dot", false)
@@ -305,7 +322,7 @@ func TestEventWholeMessageAndNoRead(t *testing.T) {
 		t.Fatalf("mail changed: %+v, %v", items, err)
 	}
 	status, err := h.mailbox.SentStatus(context.Background(), env.ID)
-	if err != nil || status.Receiver == nil || status.Receiver.ReadAt != nil {
+	if err != nil || status.Receiver == nil || status.Receiver.ReadAt != nil || status.Receiver.NotifiedAt == nil {
 		t.Fatalf("status changed: %+v, %v", status, err)
 	}
 	// Sender retry is the same stored message; local mail never rings a Door agent.
@@ -528,6 +545,14 @@ func TestEventExpiryAndTerminalResponses(t *testing.T) {
 			}
 			countRows(t, h.s, "subscriptions", wantSubs)
 			countRows(t, h.s, "event_deliveries", 0)
+			items, err := h.mailbox.DoorInbox("openai/dot", false)
+			if err != nil || len(items) != 1 {
+				t.Fatalf("inbox: %+v, %v", items, err)
+			}
+			p, err := h.mailbox.Progress("relay", items[0].Message.ID)
+			if err != nil || p.NotifiedAt != nil || p.ReadAt != nil {
+				t.Fatalf("terminal failure notified: %+v, %v", p, err)
+			}
 		})
 	}
 }
@@ -615,4 +640,119 @@ func TestEventLateGoneDoesNotRemoveReplacement(t *testing.T) {
 	takeEvent(t, cb)
 	countRows(t, h.s, "subscriptions", 1)
 	countRows(t, h.s, "event_deliveries", 0)
+}
+
+func TestEventNotifiedOnceAcrossSubscriptions(t *testing.T) {
+	h := newHarness(t)
+	tok := h.token(codeForm(h.code("openai/dot")), 200)
+	first := newEventCallback(t, h.s)
+	second := newEventCallback(t, h.s)
+	h.subscribeCallback(first, tok.Access)
+	h.subscribeCallback(second, tok.Access)
+	first.status.Store(503)
+	second.status.Store(503)
+	other := h.token(codeForm(h.code("openai/other")), 200)
+	r, err := h.mailbox.Accept(envelope.Envelope{V: envelope.Version, ID: envelope.NewID(), Kind: envelope.Request,
+		FromAgent: "other", To: "openai/dot"}, mailbox.Principal{Node: "openai", Agent: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress := func() mailbox.Progress {
+		t.Helper()
+		status := decodeResult[mailbox.SentStatus](t, h.call("openai/other", other.Access, "status", map[string]any{"id": r.ID}))
+		if status.Receiver == nil {
+			t.Fatal("status missing receiver")
+		}
+		return *status.Receiver
+	}
+	h.pumpEvents()
+	takeEvent(t, first)
+	takeEvent(t, second)
+	if p := progress(); p.NotifiedAt != nil || p.ReadAt != nil {
+		t.Fatalf("failed callback changed mail: %+v", p)
+	}
+	h.clock.Add(2)
+	first.status.Store(204)
+	h.pumpEvents()
+	takeEvent(t, first)
+	takeEvent(t, second)
+	notified := h.s.now()
+	if p := progress(); p.NotifiedAt == nil || !p.NotifiedAt.Equal(notified) || p.ReadAt != nil || p.State != "inbox" {
+		t.Fatalf("accepted callback: %+v", p)
+	}
+	h.clock.Add(4)
+	second.status.Store(200)
+	h.pumpEvents()
+	takeEvent(t, second)
+	if p := progress(); p.NotifiedAt == nil || !p.NotifiedAt.Equal(notified) || p.ReadAt != nil {
+		t.Fatalf("second subscription moved time: %+v", p)
+	}
+	opened := decodeResult[mailbox.Item](t, h.call("openai/dot", tok.Access, "read", map[string]any{"id": r.ID}))
+	if !opened.Read {
+		t.Fatal("read did not open mail")
+	}
+	if p := progress(); p.ReadAt == nil || !p.NotifiedAt.Equal(notified) {
+		t.Fatalf("opened progress: %+v", p)
+	}
+}
+
+func TestQueuedOldEventBodyIsUnchanged(t *testing.T) {
+	h := newHarness(t)
+	tok := h.token(codeForm(h.code("openai/dot")), 200)
+	bodies := make(chan []byte, 1)
+	cb := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var challenge struct{ Type, Challenge string }
+		if err := json.Unmarshal(body, &challenge); err != nil {
+			t.Error(err)
+		}
+		if challenge.Type == "verification" {
+			writeJSON(w, 200, map[string]string{"challenge": challenge.Challenge})
+			return
+		}
+		bodies <- body
+		w.WriteHeader(204)
+	}))
+	defer cb.Close()
+	h.s.callbacks.Transport = cb.Client().Transport
+	out := h.eventRPC("openai/dot", tok.Access, "events/subscribe", eventParams(cb.URL, callbackSecret))
+	if out.Error != nil {
+		t.Fatal(out.Error)
+	}
+	r, err := h.mailbox.Send(envelope.Envelope{Kind: envelope.Notice, FromAgent: "me", To: "openai/dot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.queueEvents(); err != nil {
+		t.Fatal(err)
+	}
+	var body []byte
+	if err := h.s.db.QueryRow(`SELECT body FROM event_deliveries`).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	var old map[string]any
+	if err := json.Unmarshal(body, &old); err != nil {
+		t.Fatal(err)
+	}
+	old["data"].(map[string]any)["text"] = "queued before the upgrade"
+	body, err = json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.s.db.Exec(`UPDATE event_deliveries SET body=?`, body); err != nil {
+		t.Fatal(err)
+	}
+	h.pumpEvents()
+	select {
+	case got := <-bodies:
+		if string(got) != string(body) {
+			t.Fatal("queued event was rewritten")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued event was not delivered")
+	}
+	p, err := h.mailbox.Progress("relay", r.ID)
+	if err != nil || p.NotifiedAt == nil || p.ReadAt != nil {
+		t.Fatalf("old event progress: %+v, %v", p, err)
+	}
 }

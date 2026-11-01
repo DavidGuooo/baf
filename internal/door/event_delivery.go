@@ -100,8 +100,7 @@ func (s *Server) queueEvents() error {
 			body, err := json.Marshal(event{
 				ID: id, Name: eventName, Timestamp: m.ReceivedAt.UTC(),
 				Data: eventMessage{ID: env.ID, From: m.From, To: env.To, Kind: env.Kind,
-					Text: env.Body.Text, FromThread: env.FromThread, ToThread: env.ToThread,
-					ReplyTo: env.ReplyTo, State: env.Body.State, Files: env.Body.Files},
+					ReplyTo: env.ReplyTo},
 			})
 			if err != nil {
 				return err
@@ -190,19 +189,32 @@ func (s *Server) deliverEvent(ctx context.Context, id string) error {
 	if err == nil {
 		status, _, err = s.postEvent(ctx, url, id, sub, secret, body)
 	}
+	if status/100 == 2 {
+		// Save the observation before removing the queued delivery. A retry
+		// after a crash can repeat the event, but cannot move this time.
+		var e event
+		if err := json.Unmarshal(body, &e); err != nil {
+			return err
+		}
+		if err := s.mailbox.DoorNotified(principal, e.Data.From, e.Data.ID, s.now()); err != nil {
+			return err
+		}
+		if _, err := s.db.Exec(`DELETE FROM event_deliveries WHERE id=?`, id); err != nil {
+			return err
+		}
+		slog.Info("door events delivered", "agent", principal, "event", id, "subscription", sub, "status", status)
+		return nil
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if err == nil && (status/100 == 2 || status == 410 || status == 413) {
+	if err == nil && (status == 410 || status == 413) {
 		if status == 410 {
 			// A late response from an old callback must not remove a renewal
 			// or a replacement subscription with the same public id.
 			_, err = s.db.Exec(`DELETE FROM subscriptions WHERE id=? AND generation=?`, sub, generation)
 		} else {
 			_, err = s.db.Exec(`DELETE FROM event_deliveries WHERE id=?`, id)
-		}
-		if err == nil && status/100 == 2 {
-			slog.Info("door events delivered", "agent", principal, "event", id, "subscription", sub, "status", status)
 		}
 		return err
 	}

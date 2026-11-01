@@ -58,3 +58,20 @@ func TestPrintStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintNotifiedStatus(t *testing.T) {
+	now := time.Date(2026, 11, 1, 9, 15, 13, 0, time.Local)
+	p := &mailbox.Progress{To: "openai/dot", State: "inbox", NotifiedAt: &now}
+	for _, opened := range []bool{false, true} {
+		var out strings.Builder
+		ending := "not opened yet"
+		if opened {
+			p.ReadAt = &now
+			ending = "opened Nov 1 09:15:13"
+		}
+		printStatus(&out, mailbox.SentStatus{To: p.To, Receiver: p}, now)
+		if !strings.Contains(out.String(), "receiver     in dot's inbox; told Nov 1 09:15:13; "+ending) {
+			t.Fatal(out.String())
+		}
+	}
+}

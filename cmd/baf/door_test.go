@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -178,5 +179,94 @@ func TestDoorCommandsOverSocket(t *testing.T) {
 	}
 	if err := c.DoorRevoke("openai/dot/extra"); err == nil {
 		t.Fatal("accepted invalid name")
+	}
+}
+
+type commandOutboxTransport struct{ mailbox.Transport }
+
+func (commandOutboxTransport) Known(context.Context, string) error { return nil }
+
+func TestOutboxCommandAs(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "baf-outbox-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(home)
+	t.Setenv("BAF_HOME", home)
+	t.Setenv("BAF_AGENT", "me") // outbox has no default agent filter.
+	mb, err := mailbox.Open(mailbox.Options{
+		Path: filepath.Join(home, "mailbox.db"), Node: "box", Door: commandDoorIdentity{},
+		Agents: map[string]agent.Adapter{"codex": nil, "me": nil}, Transport: commandOutboxTransport{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mb.Close()
+	ln, err := net.Listen("unix", daemon.SocketPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(daemon.Handler(mb, []string{"codex", "me"}))
+	srv.Listener.Close()
+	srv.Listener = ln
+	srv.Start()
+	defer srv.Close()
+	for _, env := range []envelope.Envelope{
+		{ID: "plain-local", Kind: envelope.Notice, FromAgent: "me", To: "box/codex"},
+		{ID: "plain-remote", Kind: envelope.Notice, FromAgent: "me", To: "other/codex"},
+		{ID: "codex-remote", Kind: envelope.Notice, FromAgent: "codex", To: "other/me"},
+	} {
+		if _, err := mb.Send(env); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, env := range []envelope.Envelope{
+		{ID: "door-local", Kind: envelope.Notice, To: "box/me"},
+		{ID: "door-remote", Kind: envelope.Notice, To: "other/me"},
+	} {
+		if _, err := mb.FromDoor("openai/dot", env); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ args, ids []string }{
+		{[]string{"--as", "me", "--all"}, []string{"plain-remote"}},
+		{[]string{"--as", "openai/dot", "--all"}, []string{"door-remote", "door-local"}},
+		{[]string{"--as", "openai/dot"}, []string{"door-remote"}},
+		{[]string{"--all"}, []string{"door-remote", "codex-remote", "plain-remote"}},
+	} {
+		var data []byte
+		func() {
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			defer w.Close()
+			old := os.Stdout
+			os.Stdout = w
+			defer func() { os.Stdout = old }()
+			if err := outbox(append(tc.args, "--json")); err != nil {
+				t.Fatal(err)
+			}
+			w.Close()
+			data, err = io.ReadAll(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}()
+		var items []mailbox.OutItem
+		if err := json.Unmarshal(data, &items); err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, it := range items {
+			ids = append(ids, it.ID)
+		}
+		if !slices.Equal(ids, tc.ids) {
+			t.Fatalf("%v: %v, want %v", tc.args, ids, tc.ids)
+		}
+	}
+	if err := outbox([]string{"--as", "openai/missing"}); err == nil || !strings.Contains(err.Error(), "does not list") {
+		t.Fatalf("unknown Door agent: %v", err)
 	}
 }

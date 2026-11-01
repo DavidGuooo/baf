@@ -3,6 +3,8 @@ package mailbox
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/DavidGuooo/baf/internal/envelope"
 )
 
 // DoorEvents nudges the Public door after mail is stored. Wake must return
@@ -59,4 +61,19 @@ func (m *Mailbox) DoorMessages(after int64) ([]DoorMessage, error) {
 		messages = append(messages, m)
 	}
 	return messages, rows.Err()
+}
+
+// DoorNotified records the first accepted wake for this message. The door
+// supplies the stored Principal and recipient, so equal ids cannot mix mail.
+// A wake never opens the message or changes its state.
+func (m *Mailbox) DoorNotified(doorAgent, sender, id string, at time.Time) error {
+	from, err := envelope.ParseAddress(sender)
+	if err != nil {
+		return err
+	}
+	_, err = m.db.Exec(`UPDATE messages SET notified_at = ?
+		WHERE sender_node = ? AND from_agent = ? AND id = ? AND to_agent = ?
+		AND instr(to_agent, '/') > 0 AND notified_at IS NULL`,
+		at.UnixMilli(), from.Node, from.Agent, id, doorAgent)
+	return err
 }

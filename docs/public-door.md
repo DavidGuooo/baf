@@ -1,7 +1,7 @@
 # Setting up the Public door: ChatGPT Dot ↔ baf agents
 
 The Public door lets a ChatGPT Dot use baf as `openai/dot`. The Relay holds its mail,
-checks its permissions in the Tailscale policy, and exposes six MCP tools through
+checks its permissions in the Tailscale policy, and exposes seven MCP tools through
 Funnel. Agents on the Relay and other tailnet machines can exchange mail with it. MCP
 events ring the Dot when new mail arrives; `inbox` stays the fallback. File transfers
 through MCP are not implemented yet.
@@ -175,7 +175,7 @@ The probe used this flow; labels may differ by account:
 4. When prompted to sign in, open the Allow page from a person's device connected to
    the tailnet. It shows your Tailscale login, the client, and its redirect address.
    Tagged devices cannot approve. Select **Allow**.
-5. Check that the connector lists `send`, `request`, `reply`, `inbox`, `read`, and `status`.
+5. Check that the connector lists `send`, `request`, `reply`, `inbox`, `outbox`, `read`, and `status`.
    It should also list `message.created`. A second Door agent needs its own policy entry
    and connector URL.
 
@@ -198,8 +198,8 @@ the Relay's grant toward it, as described below.
 
 Ask the Dot to **request** an answer from `codex`. It gets a receipt immediately; when
 Codex's run finishes, the Result appears in the Dot's **inbox**. **status** reports
-progress and the Result id. Watch for events (below) to receive the whole Result, or
-check inbox for answers.
+progress and the Result id. Watch for events (below), then **read** the Result by id,
+or check inbox for answers.
 
 To ask the Dot something from the Relay:
 
@@ -214,6 +214,16 @@ request, and `to_thread` defaults to that request's `from_thread`. `from_thread`
 optional; an explicit `to_thread` must have been shared by the recipient.
 
 **inbox** lists unread mail without changing it; `all: true` includes read mail.
+
+**outbox** lists messages you sent, newest first, so a fresh chat can find an id for
+**status**. Without `all`, it lists only mail waiting to be handed over; use `all: true`
+to include handed and failed mail. It returns up to 50 `OutItem` entries in `messages`,
+the same entries as `baf outbox --as openai/dot --all --json` on the Relay.
+Mail to agents on the Relay counts too: it left the Door agent's vendor node and is
+listed as `handed` at its storage time, with the Relay in `via`. Forwarded mail keeps
+its recorded handover state. Mail within the same vendor node stays out of this view.
+The token selects the Door agent; it cannot list another Door agent's mail.
+
 **read** marks a message read without deleting it. The sender can see that it was
 opened with `baf status <message-id>`. A receipt means stored, not read or completed.
 
@@ -222,8 +232,8 @@ plus 16 KiB for its wrapper; JSON escaping counts toward that body limit. OAuth
 requests, request URLs, and configured HTTP headers are limited to 16 KiB.
 `send`, `request`, `reply`, and `read` share a limit of **30 attempts in any rolling
 minute per Door agent**. Validated attempts that fail in the mailbox count too.
-`inbox` and `status` are read-only and do not consume this limit. Token renewal or
-replacement does not reset it; restarting baf does. Over-limit calls return a tool
+`inbox`, `outbox`, and `status` are read-only and do not consume this limit. Token renewal
+or replacement does not reset it; restarting baf does. Over-limit calls return a tool
 error and make no mailbox change.
 
 Files cannot be uploaded or downloaded through these tools. Mail already containing
@@ -234,9 +244,9 @@ files may list their names and sizes, but the door never returns local file path
 Ask the Dot:
 
 > Watch baf for message.created events. Check inbox first for any waiting mail. When an
-> event arrives, use its full message in data. For a Request, answer with reply: put
-> data.id in reply_to, your answer in text, and completed in state. Use the message id
-> to avoid answering twice. Use inbox/read if an event is missing. Do not reply to Results.
+> event arrives, read the message using data.id, then act. For a Request, answer with
+> reply: put data.id in reply_to, your answer in text, and completed in state. Use the
+> message id to avoid answering twice. Use inbox/read if an event is missing. Do not reply to Results.
 
 Then, on the Relay, send a new request:
 
@@ -258,11 +268,15 @@ prompt from you. Callback acceptance alone does not prove the Dot started or fin
 `door events retry` means a delivery failed and is waiting to try again. Logs name the
 Door agent and event/subscription ids, never callback URLs, secrets, or message text.
 
-The event's `data` contains `id`, `from` (the Principal), `to`, `kind`, the complete
-`text`, `from_thread`, `to_thread`, `reply_to`, and `state` (the Result's outcome, empty
-otherwise). File metadata is included when present, without local paths or file bytes.
+The event's `data` contains only `id`, `from` (the Principal), `to`, `kind`, and
+`reply_to` when set. It carries no text, thread ids, state or files. Call `read` with
+`id` to open the message before acting; for a Request, use `reply` to answer it.
 An event is a wake: it does not mark mail read, change its state, or confirm a handover.
-Use `read` explicitly when you want the sender to see that the message was opened.
+The Relay records the first 2xx callback acceptance as `notified_at` in progress.
+Status shows "told" at that time, including when another machine asks the Relay;
+only `read` changes "not opened yet" to "opened". Later deliveries to other
+subscriptions do not move the first notification time. Already queued events retain
+their old body through an upgrade.
 
 Subscriptions last **24 hours by default** when ChatGPT omits `ttlMs`. Explicit durations
 are clamped to one minute through seven days; `ttlMs: null` grants seven days.
