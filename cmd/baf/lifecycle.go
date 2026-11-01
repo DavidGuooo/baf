@@ -20,7 +20,7 @@ import (
 
 // These commands are for machines where nothing keeps baf running, like
 // grokbot: a routine run brings the mailbox up and waits for the messages its
-// doorbell announced, and a bot's run waits for its own messages to leave.
+// doorbell announced, and a bot's run waits for all this machine's mail to leave.
 
 // start runs `baf serve` in the background unless it is already running,
 // and waits until it answers.
@@ -159,12 +159,10 @@ func wait(args []string) error {
 	}
 }
 
-// flush blocks until none of --as's messages is waiting in the outbox, so a
-// bot's run (and the machine) stays awake until what it sent has left. Other
-// agents' messages don't hold it up.
+// flush blocks until no message is waiting in this machine's outbox, whoever
+// sent it, so a bot's run (and the machine) stays awake while mail waits to leave.
 func flush(args []string) error {
 	fs := flag.NewFlagSet("flush", flag.ExitOnError)
-	as := fs.String("as", defaultAgent(), "")
 	timeout := fs.Duration("timeout", runWait, "")
 	if _, err := parse(fs, args); err != nil {
 		return err
@@ -179,9 +177,9 @@ func flush(args []string) error {
 		if err != nil {
 			return err
 		}
-		waiting := waitingFrom(items, *as)
+		waiting := waitingIDs(items)
 		if len(waiting) == 0 {
-			fmt.Printf("nothing from %s waiting to be sent\n", *as)
+			fmt.Println("nothing waiting to be sent")
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -192,11 +190,11 @@ func flush(args []string) error {
 	}
 }
 
-// waitingFrom returns the ids of agent's messages still waiting to be handed over.
-func waitingFrom(items []mailbox.OutItem, agent string) []string {
+// waitingIDs returns the ids of all messages still waiting to be handed over.
+func waitingIDs(items []mailbox.OutItem) []string {
 	var ids []string
 	for _, it := range items {
-		if it.FromAgent == agent && it.State == "waiting" {
+		if it.State == "waiting" {
 			ids = append(ids, it.ID)
 		}
 	}

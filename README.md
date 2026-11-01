@@ -72,7 +72,11 @@ Address an agent on another machine as `node/agent`, using its Tailscale name:
 ```
 
 The message waits in this machine's outbox until that machine's baf stores it, retrying for
-24 hours; then you get a notice saying delivery could not be confirmed. `./baf status <id>`
+24 hours; then you get a notice saying delivery could not be confirmed. If the receiving
+node has a doorbell configured, baf hands the message over only after a ring gets through.
+A failed ring leaves the message waiting for another attempt; once a ring succeeds,
+retries of the push do not ring again. Nodes without a doorbell are pushed as usual.
+`./baf status <id>`
 works here too: it asks that machine's baf how the message is doing there. Files go to the
 other machine's baf ahead of the message, which it stores only once every file has arrived
 intact. Who may message whom

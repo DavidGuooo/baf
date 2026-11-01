@@ -442,10 +442,17 @@ of just `dot` does not allow this. Other unknown names are refused by the Relay.
 The Relay's receipt means it has durably taken responsibility for the mail.
 
 For a Dot sending to grokbot, the Relay holds the outgoing mail, retries, and rings
-Bridge with `openai/dot` as the sender in both `from` fields. Rejection or the normal
+Bridge with `openai/dot` as the sender in both `from` fields. The message is handed
+over only after its node's doorbell rang: a failed ring leaves it waiting, records
+the ring error, and is retried after the normal retry delay. Once a ring succeeds,
+retries of the push do not ring again. Rejection or the normal
 24-hour handover limit puts a failure Notice in the Dot's inbox and fires its event.
 The Relay rings a node only if it has a doorbell configured for that node; grokbot
-needs no doorbell key for the Relay.
+needs no doorbell key for the Relay. Nodes without a doorbell are pushed as usual.
+
+`baf flush` waits until no message is waiting in this machine's outbox, whoever
+sent it, including mail from Door agents. It has no `--as` flag; `--timeout`
+defaults to `10m`.
 
 To try both directions after adding the grants and configuring Bridge's doorbell
 on the Relay (see [Grok setup](setup-grokbot.md)):
@@ -459,7 +466,7 @@ on the Relay (see [Grok setup](setup-grokbot.md)):
    ```bash
    baf read --as tokdev <request-id>
    baf send openai/dot --as tokdev --kind result --reply-to <request-id> "the answer"
-   baf flush --as tokdev
+   baf flush
    ```
 
    If the request has a `from_thread`, include `--to-thread <from_thread>` in the
@@ -471,7 +478,7 @@ on the Relay (see [Grok setup](setup-grokbot.md)):
 
    ```bash
    baf send openai/dot --as tokdev --kind request "a question for the Dot"
-   baf flush --as tokdev
+   baf flush
    ```
 
    Ask the Dot to use `reply` with that request's id. Its Result goes back through

@@ -260,14 +260,15 @@ func (m *Mailbox) attemptHandover(ctx context.Context, o *outgoing) (string, err
 		}
 	}
 	// Ring first: the ring may be what brings a sleeping node back online.
-	// Only the first attempt rings, unless no ring has got through yet.
+	// A node with a doorbell gets no files or message until a ring gets through.
+	// Retry a failed ring; once it works, retries of the push don't ring again.
 	if !o.rung && m.doorbell != nil {
 		err := m.doorbell.Ring(ctx, o.node, o.env)
 		switch {
 		case err == nil, errors.Is(err, ErrNoDoorbell):
 			o.rung = true
 		default:
-			slog.Warn("doorbell did not ring", "node", o.node, "message", o.env.ID, "err", err)
+			return "", fmt.Errorf("doorbell did not ring: %w", err)
 		}
 	}
 

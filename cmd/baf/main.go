@@ -11,7 +11,7 @@
 //	baf outbox [--as NAME] [--waiting] list recent mail sent from the sender's node
 //	baf runs                          list recent agent runs
 //	baf wait ID...                    for routine runs: wait for mail to arrive
-//	baf flush                         for bot runs: wait for your sent mail to leave
+//	baf flush                         for bot runs: wait for all this machine's mail to leave
 //
 // ADDR is node/agent, or just agent for an agent on this machine. send and
 // request take --file PATH (repeatable) to attach files; TEXT may then be left out.
@@ -55,7 +55,7 @@ Usage:
   baf door list [--json]         list policy Door agents and their connectors
   baf door revoke VENDOR/NAME    delete that Door agent's connector and tokens
   baf wait [--as NAME] ID...     wait until these messages have arrived (default --timeout 10m)
-  baf flush [--as NAME]          wait until NAME's sent messages have left this machine (default --timeout 10m)
+  baf flush [--timeout 10m]      wait until no message is waiting in this machine's outbox
 
 ADDR is node/agent, or just agent for one on this machine. TEXT "-" reads stdin;
 it may be left out when you attach files.
