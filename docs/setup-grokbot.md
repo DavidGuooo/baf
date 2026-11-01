@@ -129,3 +129,26 @@ What should happen:
 If something goes wrong: `baf outbox --all` on either machine shows each message's state and
 its last error, and a message the receiver refuses comes back as a notice from `<node>/baf`
 saying why.
+
+### grokbot doesn't see a policy change
+
+grokbot's computer is paused and resumed, and Tailscale there can come back unable to
+reach the coordination server. Messages still flow, but grokbot keeps the policy it had
+before the pause, so a grant you just saved (a new `to`, the Relay's `relay: true`)
+never arrives; a send to `openai/dot` then fails with `no Relay found in the Tailscale
+policy`. Check from a bot's conversation:
+
+```bash
+tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Health"))'
+tailscale whois --json 100.64.0.1 | grep -A8 baf/msg
+```
+
+If Health says `Unable to connect to the Tailscale coordination server`, restart
+Tailscale there as root (from grokbot's own terminal; the bots have no sudo). Its state
+lives in `/workspace/tailscale-state`, so it comes back as the same machine:
+
+```bash
+sudo sh -c 'pkill -x tailscaled; sleep 2; setsid nohup tailscaled --state=/workspace/tailscale-state/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock --statedir=/workspace/tailscale-state >/var/log/tailscaled.log 2>&1 < /dev/null &'
+```
+
+baf needs no restart; it reads the policy each time.
