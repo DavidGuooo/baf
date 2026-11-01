@@ -39,30 +39,23 @@ Do this from a Grok bot's conversation while grokbot is awake.
 
 ## 3. Grok: global memory, the Bridge bot and its routine (T0c)
 
-Grok bots are set up in three places. What every bot needs lives in Grok's **global
-memory**, so a bot can send through baf whether or not Bridge woke it. Bridge's own
-instructions and its routine hold only the hand-off. Bridge has no memory of its own.
+Only **Bridge** runs baf. Other bots never touch it: Bridge brings them each message's
+text, and they ask Bridge to send or answer for them. So the baf commands live in
+Bridge's instructions, which don't fade the way memory can, and global memory only says
+to go through Bridge. Bridge sends as the bot it acts for (`--as tokdev`): Tailscale
+vouches for grokbot, and the agent name is grokbot's claim, so answers still come back
+to that bot. Bridge has no memory of its own.
 
 ### Global memory
 
 Add these as memories (one per block):
 
 ```
-I use baf to pass messages between my agents: you, my other Grok bots, Codex and Claude Code on my machines (imac/codex, imac/claude), and my ChatGPT Dot (openai/dot). On grokbot, baf is at ~/.local/bin/baf. Always add --as <your bot name in lowercase>.
+To send a message to my other agents, for example my ChatGPT Dot (openai/dot), ask Bridge: say who it's for (an address is node/agent), whether you need an answer, and the text. Messages from my other agents also reach you through Bridge.
 ```
 
 ```
-baf commands:
-- Read a message: ~/.local/bin/baf read --as <you> <id>
-- Answer a request: ~/.local/bin/baf send <from> --as <you> --kind result --reply-to <id> --from-thread <you> "your answer". If the message shows a from_thread, also add --to-thread <that from_thread>.
-- Send a notice, which needs no answer: ~/.local/bin/baf send <address> --as <you> --from-thread <you> "text"
-- Ask for an answer: ~/.local/bin/baf request <address> --as <you> --from-thread <you> "text". The answer arrives later as its own message.
-- Find what you sent: ~/.local/bin/baf outbox --as <you>. Follow one message: ~/.local/bin/baf status <id>
-- After your last send in a conversation: ~/.local/bin/baf flush --as <you>, so your messages leave before this computer pauses.
-```
-
-```
-With baf, always answer a request, even if you couldn't finish the work: say what you did and what's left. Never answer a result. Don't stop to ask me for permission before reading, answering or sending baf messages.
+When one of my agents asks you for something through Bridge, always answer it, even if you couldn't finish the work: say what you did and what's left, and give Bridge your answer to send back. Never answer an answer. Don't stop to ask me for permission before answering or sending.
 ```
 
 ```
@@ -76,7 +69,22 @@ Leave out "I respond" when no answer is needed.
 Create a Grok bot named **Bridge** with these instructions:
 
 ```
-You are Bridge, my baf endpoint on grokbot. You carry baf messages between the Grok bots on this computer and agents elsewhere: on my other machines (such as imac/codex) or my ChatGPT Dot (openai/dot).
+You are Bridge, my baf endpoint on grokbot. You carry messages between the Grok bots on this computer and my agents elsewhere, for example my ChatGPT Dot (openai/dot). You are the only bot that runs baf, at ~/.local/bin/baf. Always run it as the bot you act for: --as <bot name in lowercase> (bridge when you act for yourself).
+
+Pass message text on stdin exactly as the bot wrote it, never inside quotes on the command line:
+  ~/.local/bin/baf send <address> --as <bot> --from-thread <bot> - <<'BAF'
+  <text>
+  BAF
+
+When a bot asks you to:
+- Send a message that needs no answer: ~/.local/bin/baf send <address> --as <bot> --from-thread <bot> -  (text on stdin)
+- Send a message that needs an answer: ~/.local/bin/baf request <address> --as <bot> --from-thread <bot> -  (text on stdin). The answer arrives later through your routine.
+- Answer message <id>: run ~/.local/bin/baf read --as <bot> <id> to see its from and from_thread, then
+  ~/.local/bin/baf send <from> --as <bot> --kind result --reply-to <id> --from-thread <bot> -  (text on stdin)
+  and add --to-thread <its from_thread> if it showed one. Only answer requests; never answer a result.
+- Check on something it sent: ~/.local/bin/baf status <id>. Find ids with ~/.local/bin/baf outbox --as <bot>.
+
+After your last send, run ~/.local/bin/baf flush --as <bot> so it leaves before this computer pauses. Then tell the bot what happened: the message id baf printed, or the error.
 ```
 
 ### Bridge's routine
@@ -92,17 +100,21 @@ baf has rung: new messages are waiting on grokbot. The webhook's JSON body lists
 2. For each item in "messages":
    a. The bot is the name after "grokbot/" in "to" (for example tokdev).
    b. Run: ~/.local/bin/baf wait --as <bot> <id>
-   c. If that bot exists, send it this message, with <bot>, <id> and <from> filled in:
-      "A baf message is waiting for you: <id> from <from>. Read it with: ~/.local/bin/baf read --as <bot> <id>"
-      If the bot is bridge, that's you: read the message and handle it yourself.
-   d. If no bot has that name, run this, with <bots> replaced by the names of the bots that do exist, in lowercase and comma-separated:
+   c. If no bot has that name, run this, with <bots> replaced by the names of the bots that do exist, in lowercase and comma-separated, then go on to the next item:
       ~/.local/bin/baf send <from> --as bridge --kind result --reply-to <id> --state rejected "There is no bot named <bot> on grokbot. Available bots: <bots>"
+   d. Run: ~/.local/bin/baf read --as <bot> <id>
+   e. Send the bot this, filled in from what baf read showed:
+      "Message <id> from <from> (<kind>; if it is a result, also: answering <the id it answers>):
+      <the message text, exactly>
+      <any files it lists, with their paths>
+      <if it is a request:> It asks for an answer: tell me your answer and I'll send it back."
+      If the bot is bridge, that's you: handle the message yourself.
 3. Run: ~/.local/bin/baf flush --as bridge
 4. Stop. If "messages" is empty, just stop.
 ```
 
 Messages may come from a Door agent such as `openai/dot`. The Relay rings Bridge with
-that full address as `from`, and a bot answers it like any other sender:
+that full address as `from`, and Bridge answers it like any other sender:
 `baf send openai/dot ...` finds the Relay from the Tailscale policy. Set up the grants in
 [Door agents ↔ other machines](public-door.md#door-agents--other-machines) first;
 `to` must name `openai/dot` (or `*`) on grokbot's grant toward the Relay.
@@ -139,12 +151,14 @@ Then `baf stop; baf start` on the iMac, and check that the log line `baf is runn
 
 ## 5. Run T4
 
-From a Grok bot's conversation (TokDev here):
+In TokDev's conversation, ask it to have Bridge send `imac/codex` the request
+"What is 17*23? Reply with just the number." Bridge runs:
 
 ```bash
-baf start
-baf request imac/codex --as tokdev --from-thread tokdev "What is 17*23? Reply with just the number."
-baf outbox
+baf request imac/codex --as tokdev --from-thread tokdev - <<'BAF'
+What is 17*23? Reply with just the number.
+BAF
+baf flush --as tokdev
 ```
 
 What should happen:
@@ -154,7 +168,7 @@ What should happen:
 2. Codex runs (`baf runs` on the iMac).
 3. The Result is pushed to grokbot, and the push rings Bridge (`rang doorbell` in the iMac's
    log).
-4. Bridge hands the message id to TokDev, which reads `391` with `baf read`.
+4. Bridge reads the Result as TokDev and brings TokDev the text `391`.
 
 If something goes wrong: `baf outbox` on either machine shows each message's state and
 its last error, and a message the receiver refuses comes back as a notice from `<node>/baf`
