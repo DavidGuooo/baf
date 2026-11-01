@@ -12,6 +12,7 @@
 //	baf runs                          list recent agent runs
 //	baf wait ID...                    for routine runs: wait for mail to arrive
 //	baf flush                         for bot runs: wait for all this machine's mail to leave
+//	baf version                       print which release this is
 //
 // ADDR is node/agent, or just agent for an agent on this machine. send and
 // request take --file PATH (repeatable) to attach files; TEXT may then be left out.
@@ -55,6 +56,7 @@ Usage:
   baf door revoke VENDOR/NAME    delete that Door agent's connector and tokens
   baf wait [--as NAME] ID...     wait until these messages have arrived (default --timeout 10m)
   baf flush [--timeout 10m]      wait until no message is waiting in this machine's outbox
+  baf version                    print which release this is ("dev" for a build from source)
 
 ADDR is node/agent, or just agent for one on this machine. TEXT "-" reads stdin;
 it may be left out when you attach files.
@@ -115,6 +117,8 @@ func main() {
 		err = runs(args)
 	case "door":
 		err = doorCommand(args)
+	case "version", "--version":
+		fmt.Println("baf", versionString())
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:

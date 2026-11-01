@@ -161,8 +161,14 @@ File transfers through MCP remain unsupported.
 go test -race ./...
 ```
 
-Release builds (one static file per platform, no C toolchain needed):
+Release builds (one static file per platform, no C toolchain needed), with the tag as
+the version `baf version` prints:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o dist/baf-linux-amd64 ./cmd/baf
+deploy/release.sh v0.1.0
 ```
+
+Releases are on [GitHub](https://github.com/DavidGuooo/baf/releases), each with its
+binaries and `SHA256SUMS`. A build from source says `dev` and its commit. A release
+marked pre-release is for testing: GitHub's "latest release" skips it, so machines that
+update themselves from there don't install it.

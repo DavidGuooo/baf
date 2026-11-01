@@ -22,10 +22,10 @@ tailscale whois --json 100.64.0.1 | grep -A3 CapMap
 Do this from a Grok bot's conversation while grokbot is awake.
 
 1. **Get the binary there.** It is one file with nothing else to install. Run `uname -m`
-   on grokbot: `x86_64` needs `baf-linux-amd64`, `aarch64` needs `baf-linux-arm64` (both in
-   `dist/` on the iMac, with `SHA256SUMS`). Put it at `~/.local/bin/baf` and make it
-   executable. The simplest way to get it there is a GitHub release once the repo is
-   pushed, so the bot can `curl` it. Check the hash against `SHA256SUMS` either way.
+   on grokbot: `x86_64` needs `baf-linux-amd64`, `aarch64` needs `baf-linux-arm64`. Download
+   it from the latest [release](https://github.com/DavidGuooo/baf/releases), check it against
+   that release's `SHA256SUMS`, put it at `~/.local/bin/baf` and make it executable. Bridge's
+   weekly routine (step 3) keeps it up to date.
 2. **Give every bot an inbox.** Grok bots are started through Bridge, not by baf, so each
    one only has an inbox, and `"*"` gives one to any bot name. Adding a bot in Grok needs no
    change here; Bridge refuses names that aren't real bots. Write `~/.baf/config.json`:
@@ -92,7 +92,15 @@ Baf has rung: a new message is waiting on grokbot. The webhook's JSON body names
 7. Stop.
 ```
 
-Step 6 catches what no ring announces, such as the notice grokbot's own baf sends a bot
+### Bridge's weekly update
+
+Give Bridge a second routine, on a weekly schedule:
+
+```
+Once a week, check https://github.com/DavidGuooo/baf/releases for a baf release newer than ~/.local/bin/baf version. If there is one, install its baf-linux-amd64 at ~/.local/bin/baf (check it against SHA256SUMS, restart baf), then tell me the old and new version and the important changes, especially any I need to make to Bridge's or the bots' instructions.
+```
+
+Step 6 of the first routine catches what no ring announces, such as the notice grokbot's own baf sends a bot
 when its request got no answer within an hour.
 
 Messages may come from a Door agent such as `openai/dot`. The Relay rings Bridge with
