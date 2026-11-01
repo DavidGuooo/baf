@@ -231,7 +231,7 @@ func TestOutboxCommandAs(t *testing.T) {
 	for _, tc := range []struct{ args, ids []string }{
 		{[]string{"--as", "me"}, []string{"plain-remote"}},
 		{[]string{"--as", "openai/dot"}, []string{"door-remote", "door-local"}},
-		{[]string{"--as", "openai/dot", "--waiting"}, []string{"door-remote"}},
+		{[]string{"--as", "openai/dot", "--limit", "1"}, []string{"door-remote"}},
 		{nil, []string{"door-remote", "codex-remote", "plain-remote"}},
 	} {
 		var data []byte

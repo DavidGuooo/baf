@@ -5,10 +5,10 @@
 //	baf start | stop                  run the mailbox in the background, or stop it
 //	baf send ADDR [TEXT]              send a notice (no answer expected)
 //	baf request ADDR [TEXT]           send a request (a Result comes back)
-//	baf inbox [--as NAME]             list recent messages, newest first, read and unread
+//	baf inbox [--as NAME] [--limit N] list recent messages, newest first, read and unread
 //	baf read ID                       show one message and mark it read
 //	baf status ID                     follow a message you sent: handed over, running, answered
-//	baf outbox [--as NAME] [--waiting] list recent mail sent from the sender's node
+//	baf outbox [--as NAME] [--limit N] list recent mail sent from the sender's node
 //	baf runs                          list recent agent runs
 //	baf wait ID...                    for routine runs: wait for mail to arrive
 //	baf flush                         for bot runs: wait for all this machine's mail to leave
@@ -46,11 +46,10 @@ Usage:
   baf start | stop               run it in the background (log: ~/.baf/baf.log), or stop it
   baf send ADDR [TEXT...]        send a notice (expects no answer)
   baf request ADDR [TEXT...]     ask for a Result (no-answer notice after 1 hour)
-  baf inbox [--as NAME]          latest 50 messages, read and unread, newest first
+  baf inbox [--as NAME] [--limit N]   recent messages, read and unread, newest first (default 50)
   baf read ID                    show one message and mark it read
   baf status ID                  follow a message you sent: handed over, running (and doing what), answered
-  baf outbox [--as NAME]         recent mail sent from the sender's node, newest first
-                                 (--waiting: only mail not yet handed over)
+  baf outbox [--as NAME] [--limit N]  recent mail sent from the sender's node, newest first (default 50)
   baf runs [--limit N]           list recent agent runs
   baf door list [--json]         list policy Door agents and their connectors
   baf door revoke VENDOR/NAME    delete that Door agent's connector and tokens
@@ -240,6 +239,7 @@ func resultState(kind envelope.Kind, state string) envelope.ResultState {
 func inbox(args []string) error {
 	fs := flag.NewFlagSet("inbox", flag.ExitOnError)
 	as := fs.String("as", os.Getenv("BAF_AGENT"), "") // no name = every agent's messages
+	limit := fs.Int("limit", 50, "")
 	asJSON := fs.Bool("json", false, "")
 	if _, err := parse(fs, args); err != nil {
 		return err
@@ -248,7 +248,7 @@ func inbox(args []string) error {
 	if err != nil {
 		return err
 	}
-	items, err := c.Inbox(*as, false, 50)
+	items, err := c.Inbox(*as, false, max(*limit, 1))
 	if err != nil {
 		return err
 	}
@@ -331,7 +331,7 @@ func printItem(w io.Writer, it mailbox.Item) {
 func outbox(args []string) error {
 	fs := flag.NewFlagSet("outbox", flag.ExitOnError)
 	as := fs.String("as", "", "")
-	waiting := fs.Bool("waiting", false, "")
+	limit := fs.Int("limit", 50, "")
 	asJSON := fs.Bool("json", false, "")
 	if _, err := parse(fs, args); err != nil {
 		return err
@@ -340,7 +340,7 @@ func outbox(args []string) error {
 	if err != nil {
 		return err
 	}
-	items, err := c.Outbox(*as, !*waiting)
+	items, err := c.Outbox(*as, true, max(*limit, 1))
 	if err != nil {
 		return err
 	}
@@ -348,7 +348,7 @@ func outbox(args []string) error {
 		return printJSON(items)
 	}
 	if len(items) == 0 {
-		fmt.Println("nothing waiting to be sent")
+		fmt.Println("nothing sent")
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)

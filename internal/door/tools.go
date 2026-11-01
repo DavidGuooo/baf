@@ -20,6 +20,23 @@ const (
 	writesPerMinute = 30
 )
 
+// limitProperties lets inbox and outbox list more than the default 50.
+func limitProperties() map[string]any {
+	return map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": maxListLimit, "default": 50,
+		"description": "How many messages to list, newest first."}}
+}
+
+// maxListLimit keeps one tool result to a size a chat can take in.
+const maxListLimit = 500
+
+// listLimit is the limit asked for, or 50, never more than maxListLimit.
+func (a toolArguments) listLimit() int {
+	if a.Limit <= 0 {
+		return 50
+	}
+	return min(a.Limit, maxListLimit)
+}
+
 func stringProperty(description string) map[string]any {
 	return map[string]any{"type": "string", "description": description}
 }
@@ -71,10 +88,10 @@ var mcpTools = []map[string]any{
 		replyProperties(), []string{"reply_to", "text"}, false),
 	tool("inbox", "List your 50 most recent messages, newest first, including read mail and answers to your requests. "+
 		"Each says whether it was read. Listing does not mark mail read; use read for that.",
-		map[string]any{}, []string{}, true),
+		limitProperties(), []string{}, true),
 	tool("outbox", "List messages you recently sent, newest first, to find an id for status. "+
-		"Set waiting to list only those not yet handed over.",
-		map[string]any{"waiting": map[string]any{"type": "boolean", "default": false}}, []string{}, true),
+		"Each shows whether it was handed over.",
+		limitProperties(), []string{}, true),
 	tool("read", "Open one message addressed to you and mark it read. This neither deletes it nor answers it. "+
 		"If it is a Request, use reply when you have an answer. Files cannot be downloaded through this door.",
 		map[string]any{"id": stringProperty("ID of a message in your inbox.")}, []string{"id"}, false),
@@ -91,7 +108,7 @@ type toolArguments struct {
 	ReplyTo    string               `json:"reply_to"`
 	State      envelope.ResultState `json:"state"`
 	ID         string               `json:"id"`
-	Waiting    bool                 `json:"waiting"`
+	Limit      int                  `json:"limit"`
 }
 
 func (s *Server) callTool(ctx context.Context, principal, name string, raw map[string]json.RawMessage) any {
@@ -138,7 +155,7 @@ func (s *Server) callTool(ctx context.Context, principal, name string, raw map[s
 	}
 	switch name {
 	case "inbox":
-		items, err := s.mailbox.DoorInbox(principal, false, 50)
+		items, err := s.mailbox.DoorInbox(principal, false, a.listLimit())
 		if items == nil {
 			items = []mailbox.Item{}
 		}
@@ -147,7 +164,7 @@ func (s *Server) callTool(ctx context.Context, principal, name string, raw map[s
 		}
 		return toolResult(map[string]any{"messages": items}, err)
 	case "outbox":
-		items, err := s.mailbox.OutboxAs(principal, !a.Waiting, 50)
+		items, err := s.mailbox.OutboxAs(principal, true, a.listLimit())
 		if items == nil {
 			items = []mailbox.OutItem{}
 		}

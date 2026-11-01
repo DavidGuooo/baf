@@ -173,7 +173,7 @@ func flush(args []string) error {
 	}
 	deadline := time.Now().Add(*timeout)
 	for {
-		items, err := c.Outbox("", false)
+		items, err := c.Outbox("", false, 0)
 		if err != nil {
 			return err
 		}

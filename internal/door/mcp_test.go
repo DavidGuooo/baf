@@ -140,14 +140,13 @@ func TestMCPDiscovery(t *testing.T) {
 		if name == "inbox" {
 			var schema struct {
 				Properties map[string]struct {
-					Type    string `json:"type"`
-					Default *bool  `json:"default"`
+					Type string `json:"type"`
 				} `json:"properties"`
 			}
 			if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
 				t.Fatal(err)
 			}
-			if len(schema.Properties) != 0 {
+			if limit, ok := schema.Properties["limit"]; !ok || limit.Type != "integer" || len(schema.Properties) != 1 {
 				t.Fatalf("inbox schema = %s", tool.InputSchema)
 			}
 		}
@@ -493,13 +492,13 @@ func TestMCPOutboxScopedToToken(t *testing.T) {
 	if len(items) != 1 || items[0].ID != mine.ID || items[0].Origin != "openai/dot" || items[0].State != "handed" {
 		t.Fatalf("outbox = %+v", items)
 	}
-	waiting := decodeResult[struct {
+	limited := decodeResult[struct {
 		Messages []mailbox.OutItem `json:"messages"`
-	}](t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"waiting": true}))
-	if len(waiting.Messages) != 0 {
-		t.Fatalf("already handed mail = %+v", waiting)
+	}](t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"limit": 1}))
+	if len(limited.Messages) != 1 {
+		t.Fatalf("limit 1 = %+v", limited)
 	}
-	wantToolError(t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"waiting": "yes"}), "bad tool arguments")
+	wantToolError(t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"limit": "yes"}), "bad tool arguments")
 }
 
 func TestMCPInboxRecent(t *testing.T) {

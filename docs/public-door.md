@@ -221,13 +221,12 @@ also supported; the default is `completed`. The recipient comes from the stored
 request, and `to_thread` defaults to that request's `from_thread`. `from_thread` is
 optional; an explicit `to_thread` must have been shared by the recipient.
 
-**inbox** lists the latest 50 messages, read and unread, newest first, including answers
-to your requests; each says whether it was read. Listing does not mark mail read. On the
+**inbox** lists the latest 50 messages (`limit` for more, up to 500), read and unread,
+newest first, including answers to your requests; each says whether it was read. Listing does not mark mail read. On the
 Relay, `baf inbox --as openai/dot` lists the same; add `--json` for JSON.
 
 **outbox** lists messages you recently sent, newest first, so a fresh chat can find an
-id for **status**. `waiting: true` lists only mail not yet handed over. It returns up to
-50 `OutItem` entries in `messages`, the same entries as
+id for **status**. It returns up to 50 (`limit` for more, up to 500) `OutItem` entries in `messages`, the same entries as
 `baf outbox --as openai/dot --json` on the Relay.
 Mail to agents on the Relay counts too: it left the Door agent's vendor node and is
 listed as `handed` at its storage time, with the Relay in `via`. Forwarded mail keeps

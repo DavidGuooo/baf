@@ -52,7 +52,7 @@ Continue the same Codex thread by passing the thread id the Result came from:
 ```
 
 `./baf inbox` lists the latest 50 messages, read and unread, newest first, with a READ
-column. Use `--as NAME` to select an agent. Listing does not mark mail read; `read` does. `--json` prints the same list as JSON.
+column. Use `--as NAME` to select an agent and `--limit N` for more than 50. Listing does not mark mail read; `read` does. `--json` prints the same list as JSON.
 
 `./baf runs` lists the agent runs and how they ended.
 
@@ -88,7 +88,7 @@ into it. Without a matching grant, the receiver refuses the message and the send
 notice saying why.
 
 `./baf outbox --as me` lists recent mail sent as `me` to other nodes, newest first, so
-you can find an id for `baf status`. `--waiting` lists only mail not yet handed over.
+you can find an id for `baf status`. `--limit N` lists more than the default 50.
 Without `--as`, it lists every agent's mail, regardless of `$BAF_AGENT`.
 On the Relay, `./baf outbox --as openai/dot` also includes mail the Dot sent to
 agents on the Relay, already handed over when stored: the Dot's node is `openai`.
