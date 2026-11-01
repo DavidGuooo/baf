@@ -26,15 +26,23 @@ var ErrNotFound = errors.New("no such message")
 // ErrNotForYou means the message exists but is addressed to another agent.
 var ErrNotForYou = errors.New("that message is not addressed to you")
 
-// Inbox lists messages on this node, oldest first: those addressed to
-// agentName, or to every agent if agentName is empty. Unless all is true it
-// leaves out messages already read.
-func (m *Mailbox) Inbox(agentName string, all bool) ([]Item, error) {
+// Inbox lists recent messages, newest first, addressed to agentName, or to
+// every agent if agentName is empty. A zero limit means all messages. With
+// unread, it lists every unread message oldest first, ignoring the limit.
+// Listing never marks mail read.
+func (m *Mailbox) Inbox(agentName string, unread bool, limit int) ([]Item, error) {
 	q := `SELECT sender_node, envelope, state, received_at, read_at FROM messages WHERE (? = '' OR to_agent = ?)`
-	if !all {
-		q += ` AND read_at IS NULL`
+	args := []any{agentName, agentName}
+	if unread {
+		q += ` AND read_at IS NULL ORDER BY seq`
+	} else {
+		q += ` ORDER BY seq DESC`
+		if limit > 0 {
+			q += ` LIMIT ?`
+			args = append(args, limit)
+		}
 	}
-	rows, err := m.db.Query(q+` ORDER BY seq`, agentName, agentName)
+	rows, err := m.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}

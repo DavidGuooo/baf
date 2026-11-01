@@ -159,7 +159,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func inbox(t *testing.T, nd *node, agentName string) []mailbox.Item {
 	t.Helper()
-	items, err := nd.mb.Inbox(agentName, true)
+	items, err := nd.mb.Inbox(agentName, false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestRequestAcrossNodesAndResultBack(t *testing.T) {
 	grok.send(t, envelope.Envelope{Kind: envelope.Request, To: "imac/codex", FromAgent: "tokdev",
 		FromThread: "tokdev", ToThread: "codex-thread", Body: envelope.Body{Text: "again"}})
 	waitFor(t, "the second result", func() bool { return len(inbox(t, grok, "tokdev")) == 2 })
-	if got := inbox(t, grok, "tokdev")[1].Message.Body.State; got != envelope.Completed {
+	if got := inbox(t, grok, "tokdev")[0].Message.Body.State; got != envelope.Completed {
 		t.Fatalf("second request: %s", got)
 	}
 }
@@ -287,14 +287,14 @@ func TestGiveUpTellsSenderAndFailsLaterMessages(t *testing.T) {
 
 	waitFor(t, "two failure notices", func() bool { return len(inbox(t, imac, "me")) == 2 })
 	notices := inbox(t, imac, "me")
-	if !strings.Contains(notices[0].Message.Body.Text, "could not be confirmed") ||
-		!strings.Contains(notices[0].Message.Body.Text, first.ID) {
-		t.Fatalf("first notice: %q", notices[0].Message.Body.Text)
+	if !strings.Contains(notices[1].Message.Body.Text, "could not be confirmed") ||
+		!strings.Contains(notices[1].Message.Body.Text, first.ID) {
+		t.Fatalf("first notice: %q", notices[1].Message.Body.Text)
 	}
-	if !strings.Contains(notices[1].Message.Body.Text, "was not sent, because the earlier message "+first.ID) {
-		t.Fatalf("second notice: %q", notices[1].Message.Body.Text)
+	if !strings.Contains(notices[0].Message.Body.Text, "was not sent, because the earlier message "+first.ID) {
+		t.Fatalf("second notice: %q", notices[0].Message.Body.Text)
 	}
-	if notices[0].Message.ToThread != "t" {
+	if notices[1].Message.ToThread != "t" {
 		t.Fatal("a failure notice must go back into the thread the message came from")
 	}
 }

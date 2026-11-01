@@ -317,7 +317,7 @@ func TestEventIDsAndNoRead(t *testing.T) {
 		e.Data.ReplyTo != request.ID {
 		t.Fatalf("incomplete event: %+v", e)
 	}
-	items, err := h.mailbox.DoorInbox("openai/dot", false)
+	items, err := h.mailbox.DoorInbox("openai/dot", true, 0)
 	if err != nil || len(items) != 1 || items[0].Read || items[0].State != "inbox" {
 		t.Fatalf("mail changed: %+v, %v", items, err)
 	}
@@ -384,7 +384,7 @@ func TestEventRetryRestartAndGiveUp(t *testing.T) {
 	h.pumpEvents()
 	noEvent(t, cb)
 	countRows(t, h.s, "event_deliveries", 0)
-	items, err := h.mailbox.DoorInbox("openai/dot", false)
+	items, err := h.mailbox.DoorInbox("openai/dot", true, 0)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("mail lost: %+v %v", items, err)
 	}
@@ -545,7 +545,7 @@ func TestEventExpiryAndTerminalResponses(t *testing.T) {
 			}
 			countRows(t, h.s, "subscriptions", wantSubs)
 			countRows(t, h.s, "event_deliveries", 0)
-			items, err := h.mailbox.DoorInbox("openai/dot", false)
+			items, err := h.mailbox.DoorInbox("openai/dot", true, 0)
 			if err != nil || len(items) != 1 {
 				t.Fatalf("inbox: %+v, %v", items, err)
 			}

@@ -181,7 +181,7 @@ func TestFileHandoverFailureAndStopping(t *testing.T) {
 			if err != nil || len(out) != 1 {
 				t.Fatalf("outbox = %+v, err = %v", out, err)
 			}
-			notices, err := mb.Inbox("tokdev", true)
+			notices, err := mb.Inbox("tokdev", false, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -137,7 +137,7 @@ func wait(args []string) error {
 	}
 	deadline := time.Now().Add(*timeout)
 	for {
-		items, err := c.Inbox(*as, true)
+		items, err := c.Inbox(*as, false, 0)
 		if err == nil {
 			missing := slices.Clone(ids)
 			for _, it := range items {

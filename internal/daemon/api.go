@@ -98,7 +98,12 @@ func HandlerWithDoor(mb *mailbox.Mailbox, agents []string, d *door.Server) http.
 	})
 
 	mux.HandleFunc("GET /v1/inbox", func(w http.ResponseWriter, r *http.Request) {
-		items, err := mb.Inbox(r.URL.Query().Get("agent"), r.URL.Query().Get("all") == "1")
+		// An explicit zero lets wait look for ids in all mail.
+		limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+		if err != nil || limit < 0 {
+			limit = 50
+		}
+		items, err := mb.Inbox(r.URL.Query().Get("agent"), r.URL.Query().Get("unread") == "1", limit)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiError{Error: err.Error()})
 			return

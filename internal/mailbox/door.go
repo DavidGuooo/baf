@@ -126,11 +126,11 @@ func (m *Mailbox) FromDoor(doorAgent string, env envelope.Envelope) (Receipt, er
 }
 
 // DoorInbox lists only this Door agent's mail. Listing never marks it read.
-func (m *Mailbox) DoorInbox(doorAgent string, all bool) ([]Item, error) {
+func (m *Mailbox) DoorInbox(doorAgent string, unread bool, limit int) ([]Item, error) {
 	if _, _, err := m.requireDoor(doorAgent); err != nil {
 		return nil, err
 	}
-	return m.Inbox(doorAgent, all)
+	return m.Inbox(doorAgent, unread, limit)
 }
 
 // DoorRead opens one message and marks it read, without confirming or

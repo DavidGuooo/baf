@@ -73,10 +73,10 @@ func (c *Client) AddFile(name string, r io.Reader) (envelope.File, error) {
 	return f, err
 }
 
-func (c *Client) Inbox(agentName string, all bool) ([]mailbox.Item, error) {
-	q := url.Values{"agent": {agentName}}
-	if all {
-		q.Set("all", "1")
+func (c *Client) Inbox(agentName string, unread bool, limit int) ([]mailbox.Item, error) {
+	q := url.Values{"agent": {agentName}, "limit": {strconv.Itoa(limit)}}
+	if unread {
+		q.Set("unread", "1")
 	}
 	var items []mailbox.Item
 	return items, c.do("GET", "/v1/inbox?"+q.Encode(), nil, &items)

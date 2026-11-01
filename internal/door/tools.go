@@ -69,9 +69,9 @@ var mcpTools = []map[string]any{
 		"Name the request in reply_to. Its stored Principal is the recipient. "+
 		"Use send for a Notice; never answer a Notice or a Result with reply.",
 		replyProperties(), []string{"reply_to", "text"}, false),
-	tool("inbox", "List your unread messages, oldest first, including answers to your requests. "+
-		"Set all to include messages already read. Listing does not mark mail read; use read for that.",
-		map[string]any{"all": map[string]any{"type": "boolean", "default": false}}, []string{}, true),
+	tool("inbox", "List your 50 most recent messages, newest first, including read mail and answers to your requests. "+
+		"Each says whether it was read. Listing does not mark mail read; use read for that.",
+		map[string]any{}, []string{}, true),
 	tool("outbox", "List messages you recently sent, newest first, to find an id for status. "+
 		"Set waiting to list only those not yet handed over.",
 		map[string]any{"waiting": map[string]any{"type": "boolean", "default": false}}, []string{}, true),
@@ -91,7 +91,6 @@ type toolArguments struct {
 	ReplyTo    string               `json:"reply_to"`
 	State      envelope.ResultState `json:"state"`
 	ID         string               `json:"id"`
-	All        bool                 `json:"all"`
 	Waiting    bool                 `json:"waiting"`
 }
 
@@ -139,7 +138,7 @@ func (s *Server) callTool(ctx context.Context, principal, name string, raw map[s
 	}
 	switch name {
 	case "inbox":
-		items, err := s.mailbox.DoorInbox(principal, a.All)
+		items, err := s.mailbox.DoorInbox(principal, false, 50)
 		if items == nil {
 			items = []mailbox.Item{}
 		}
@@ -201,7 +200,7 @@ func (s *Server) callTool(ctx context.Context, principal, name string, raw map[s
 func (s *Server) receivedRequest(principal, id string) (mailbox.Item, error) {
 	// Listing keeps reply from marking a request read as a side effect. It also
 	// prevents replying to a request addressed to any other agent.
-	items, err := s.mailbox.DoorInbox(principal, true)
+	items, err := s.mailbox.DoorInbox(principal, false, 0)
 	if err != nil {
 		return mailbox.Item{}, err
 	}

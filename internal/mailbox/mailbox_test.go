@@ -114,7 +114,7 @@ func (h *harness) waitInbox(agentName string, n int) []Item {
 	h.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		items, err := h.mb.Inbox(agentName, true)
+		items, err := h.mb.Inbox(agentName, false, 0)
 		if err != nil {
 			h.t.Fatal(err)
 		}
@@ -150,7 +150,7 @@ func TestRequestGetsAutomaticResult(t *testing.T) {
 		t.Fatalf("from_agent %q", res.FromAgent)
 	}
 	// The worker got the request in its run, so it counts as read.
-	if unread, _ := h.mb.Inbox("worker", false); len(unread) != 0 {
+	if unread, _ := h.mb.Inbox("worker", true, 0); len(unread) != 0 {
 		t.Fatalf("worker's handled request still unread: %+v", unread)
 	}
 }
@@ -166,7 +166,7 @@ func TestNoticeGetsNoResult(t *testing.T) {
 	}
 	h.waitInbox("me", 1)
 	time.Sleep(50 * time.Millisecond)
-	items, _ := h.mb.Inbox("me", true)
+	items, _ := h.mb.Inbox("me", false, 0)
 	if len(items) != 1 || items[0].Message.Body.Text != "done: q" {
 		t.Fatalf("me's inbox: %+v", items)
 	}
@@ -275,7 +275,7 @@ func TestOneRunPerThreadAtATime(t *testing.T) {
 	}
 	// Same thread, so the requests ran in the order they arrived.
 	for i, want := range []string{"a", "b", "c"} {
-		if got := items[i+1].Message.Body.Text; got != want {
+		if got := items[2-i].Message.Body.Text; got != want {
 			t.Fatalf("result %d = %q, want %q", i, got, want)
 		}
 	}
@@ -354,7 +354,7 @@ func TestReadMarksRead(t *testing.T) {
 	if _, err := h.mb.Read("me", id); err != nil {
 		t.Fatal(err)
 	}
-	unread, _ := h.mb.Inbox("me", false)
+	unread, _ := h.mb.Inbox("me", true, 0)
 	if len(unread) != 0 {
 		t.Fatalf("still unread: %+v", unread)
 	}
@@ -371,8 +371,8 @@ func TestReadMarksRead(t *testing.T) {
 
 	// Inbox: no name lists every agent's messages; a name filters.
 	h.send(envelope.Envelope{Kind: envelope.Notice, To: "box/other", Body: envelope.Body{Text: "for other"}})
-	everyone, _ := h.mb.Inbox("", true)
-	mine, _ := h.mb.Inbox("me", true)
+	everyone, _ := h.mb.Inbox("", false, 0)
+	mine, _ := h.mb.Inbox("me", false, 0)
 	if len(everyone) != 3 || len(mine) != 1 { // request to worker, result to me, notice to other
 		t.Fatalf("inbox: %d for everyone, %d for me; want 3 and 1", len(everyone), len(mine))
 	}
@@ -395,7 +395,7 @@ func TestAnyAgentGivesEveryNameAnInbox(t *testing.T) {
 		Body: envelope.Body{Text: "hi"}}); err != nil {
 		t.Fatal(err)
 	}
-	items, _ := mb.Inbox("otherbot", true)
+	items, _ := mb.Inbox("otherbot", false, 0)
 	if len(items) != 1 || items[0].State != "inbox" {
 		t.Fatalf("otherbot's inbox: %+v", items)
 	}

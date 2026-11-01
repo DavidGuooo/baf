@@ -74,7 +74,7 @@ func TestFromDoorPermissionAndPrincipal(t *testing.T) {
 	if err != nil || r.Queued {
 		t.Fatalf("receipt = %+v, err = %v", r, err)
 	}
-	items, err := mb.Inbox("codex", true)
+	items, err := mb.Inbox("codex", false, 0)
 	if err != nil || len(items) != 1 || items[0].From != "openai/dot" || items[0].Message.FromAgent != "dot" || items[0].Message.Origin != "" {
 		t.Fatalf("inbox = %+v, err = %v", items, err)
 	}
@@ -106,7 +106,7 @@ func TestLocalMailToDoorReadAndFiles(t *testing.T) {
 	if err != nil || r.Queued || tr.lookups != 0 {
 		t.Fatalf("receipt = %+v, lookups = %d, err = %v", r, tr.lookups, err)
 	}
-	items, err := mb.DoorInbox("openai/dot", false)
+	items, err := mb.DoorInbox("openai/dot", true, 0)
 	if err != nil || len(items) != 1 || items[0].State != "inbox" || items[0].Read || items[0].Message.To != "openai/dot" {
 		t.Fatalf("inbox = %+v, err = %v", items, err)
 	}
@@ -126,13 +126,13 @@ func TestLocalMailToDoorReadAndFiles(t *testing.T) {
 	if err != nil || p.Receiver.ReadAt == nil || p.Receiver.Run != nil || p.Receiver.State != "inbox" {
 		t.Fatalf("opened status = %+v, err = %v", p, err)
 	}
-	if unread, err := mb.DoorInbox("openai/dot", false); err != nil || len(unread) != 0 {
+	if unread, err := mb.DoorInbox("openai/dot", true, 0); err != nil || len(unread) != 0 {
 		t.Fatalf("unread = %+v, err = %v", unread, err)
 	}
-	if all, err := mb.DoorInbox("openai/dot", true); err != nil || len(all) != 1 {
+	if all, err := mb.DoorInbox("openai/dot", false, 0); err != nil || len(all) != 1 {
 		t.Fatalf("reading deleted mail: %+v, %v", all, err)
 	}
-	if local, err := mb.Inbox("dot", true); err != nil || len(local) != 0 {
+	if local, err := mb.Inbox("dot", false, 0); err != nil || len(local) != 0 {
 		t.Fatalf("Door mail went to the local dot: %+v, %v", local, err)
 	}
 	claims, err := mb.claim()
@@ -159,7 +159,7 @@ func TestDoorRequestResultAndThreads(t *testing.T) {
 		t.Fatalf("claims = %+v, err = %v", claims, err)
 	}
 	mb.execute(context.Background(), claims[0])
-	items, err := mb.DoorInbox("openai/dot", true)
+	items, err := mb.DoorInbox("openai/dot", false, 0)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("inbox = %+v, err = %v", items, err)
 	}
@@ -201,7 +201,7 @@ func TestDoorPolicyChangesAndFailure(t *testing.T) {
 			_, err := mb.Send(envelope.Envelope{Kind: envelope.Notice, FromAgent: "codex", To: "openai/dot"})
 			return err
 		},
-		"inbox":  func() error { _, err := mb.DoorInbox("openai/dot", true); return err },
+		"inbox":  func() error { _, err := mb.DoorInbox("openai/dot", false, 0); return err },
 		"read":   func() error { _, err := mb.DoorRead("openai/dot", "id"); return err },
 		"status": func() error { _, err := mb.DoorStatus(context.Background(), "openai/dot", "id"); return err },
 	} {
@@ -230,7 +230,7 @@ func TestDoorDisabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("disabled door accepted local mail for a Door agent")
 	}
-	_, err = mb.DoorInbox("openai/dot", true)
+	_, err = mb.DoorInbox("openai/dot", false, 0)
 	wantDoorRejection(t, err, "disabled")
 	_, err = mb.DoorRead("openai/dot", "id")
 	wantDoorRejection(t, err, "disabled")
@@ -241,7 +241,7 @@ func TestDoorDisabled(t *testing.T) {
 	// The wildcard for local inboxes must not let the owner impersonate a Dot.
 	_, err = mb.Send(envelope.Envelope{Kind: envelope.Notice, FromAgent: "openai/dot", To: "box/me"})
 	wantDoorRejection(t, err, "not an agent")
-	items, err := mb.Inbox("", true)
+	items, err := mb.Inbox("", false, 0)
 	if err != nil || len(items) != 0 {
 		t.Fatalf("inbox = %+v, err = %v", items, err)
 	}
@@ -299,7 +299,7 @@ func TestDoorStatusDoesNotUseAnotherSendWithTheSameID(t *testing.T) {
 	}
 	mb.execute(context.Background(), claims[1])
 	for _, name := range []string{"openai/dot", "anthropic/dot"} {
-		items, err := mb.DoorInbox(name, true)
+		items, err := mb.DoorInbox(name, false, 0)
 		if err != nil || len(items) != 1 {
 			t.Fatalf("%s inbox = %+v, err = %v", name, items, err)
 		}
@@ -329,7 +329,7 @@ func TestDoorRequestRecoveredAfterCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mb.Close()
-	items, err := mb.DoorInbox("openai/dot", true)
+	items, err := mb.DoorInbox("openai/dot", false, 0)
 	if err != nil || len(items) != 1 || items[0].Message.ReplyTo != r.ID || items[0].Message.Body.State != envelope.Unknown || items[0].Message.ToThread != "dot-thread" {
 		t.Fatalf("recovered Result = %+v, err = %v", items, err)
 	}

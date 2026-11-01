@@ -5,7 +5,7 @@
 //	baf start | stop                  run the mailbox in the background, or stop it
 //	baf send ADDR [TEXT]              send a notice (no answer expected)
 //	baf request ADDR [TEXT]           send a request (a Result comes back)
-//	baf inbox [--all]                 list unread messages
+//	baf inbox [--as NAME]             list recent messages, newest first, read and unread
 //	baf read ID                       show one message and mark it read
 //	baf status ID                     follow a message you sent: handed over, running, answered
 //	baf outbox [--as NAME] [--waiting] list recent mail sent from the sender's node
@@ -46,7 +46,7 @@ Usage:
   baf start | stop               run it in the background (log: ~/.baf/baf.log), or stop it
   baf send ADDR [TEXT...]        send a notice (expects no answer)
   baf request ADDR [TEXT...]     ask for a Result (no-answer notice after 1 hour)
-  baf inbox [--all]              list unread messages on this machine (--all: read ones too)
+  baf inbox [--as NAME]          latest 50 messages, read and unread, newest first
   baf read ID                    show one message and mark it read
   baf status ID                  follow a message you sent: handed over, running (and doing what), answered
   baf outbox [--as NAME]         recent mail sent from the sender's node, newest first
@@ -240,7 +240,6 @@ func resultState(kind envelope.Kind, state string) envelope.ResultState {
 func inbox(args []string) error {
 	fs := flag.NewFlagSet("inbox", flag.ExitOnError)
 	as := fs.String("as", os.Getenv("BAF_AGENT"), "") // no name = every agent's messages
-	all := fs.Bool("all", false, "")
 	asJSON := fs.Bool("json", false, "")
 	if _, err := parse(fs, args); err != nil {
 		return err
@@ -249,7 +248,7 @@ func inbox(args []string) error {
 	if err != nil {
 		return err
 	}
-	items, err := c.Inbox(*as, *all)
+	items, err := c.Inbox(*as, false, 50)
 	if err != nil {
 		return err
 	}
@@ -265,14 +264,18 @@ func inbox(args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tTO\tKIND\tFROM\tRECEIVED\tTEXT")
+	fmt.Fprintln(tw, "ID\tTO\tKIND\tFROM\tREAD\tRECEIVED\tTEXT")
 	for _, it := range items {
 		kind := string(it.Message.Kind)
 		if it.Message.Body.State != "" {
 			kind += " (" + string(it.Message.Body.State) + ")"
 		}
 		_, to, _ := strings.Cut(it.Message.To, "/")
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", it.Message.ID, to, kind, it.From,
+		read := "no"
+		if it.Read {
+			read = "yes"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", it.Message.ID, to, kind, it.From, read,
 			it.ReceivedAt.Local().Format("Jan 2 15:04"), inboxText(it))
 	}
 	return tw.Flush()

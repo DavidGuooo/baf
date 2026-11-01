@@ -221,7 +221,9 @@ also supported; the default is `completed`. The recipient comes from the stored
 request, and `to_thread` defaults to that request's `from_thread`. `from_thread` is
 optional; an explicit `to_thread` must have been shared by the recipient.
 
-**inbox** lists unread mail without changing it; `all: true` includes read mail.
+**inbox** lists the latest 50 messages, read and unread, newest first, including answers
+to your requests; each says whether it was read. Listing does not mark mail read. On the
+Relay, `baf inbox --as openai/dot` lists the same; add `--json` for JSON.
 
 **outbox** lists messages you recently sent, newest first, so a fresh chat can find an
 id for **status**. `waiting: true` lists only mail not yet handed over. It returns up to
@@ -251,9 +253,9 @@ files may list their names and sizes, but the door never returns local file path
 
 Ask the Dot:
 
-> Watch baf for message.created events. At the start of each run, check inbox for unread
-> mail too. For each message, first call read with its id (data.id in the event); handle
-> each id once.
+> Watch baf for message.created events. At the start of each run, call inbox and
+> handle any message not yet read too. For each message, first call read with its
+> id (data.id in the event); handle each id once.
 >
 > - Request: do what it asks if you can, then answer with reply: reply_to is the message
 >   id, your answer goes in text, state is completed. If you tried and couldn't, use

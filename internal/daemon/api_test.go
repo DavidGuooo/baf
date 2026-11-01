@@ -156,3 +156,67 @@ func TestDoorDisabledOnLocalAPI(t *testing.T) {
 		}
 	}
 }
+
+func TestInboxAPIAndClient(t *testing.T) {
+	mb, err := mailbox.Open(mailbox.Options{Path: filepath.Join(t.TempDir(), "mailbox.db"), Node: "box", Agents: map[string]agent.Adapter{"me": nil, "other": nil}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mb.Close()
+	for i := 0; i < 60; i++ {
+		if _, err := mb.Send(envelope.Envelope{ID: fmt.Sprintf("mail-%02d", i), Kind: envelope.Notice, FromAgent: "me", To: "box/me"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := mb.Read("me", "mail-59"); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(Handler(mb, []string{"me", "other"}))
+	defer srv.Close()
+	for _, tc := range []struct {
+		query       string
+		count       int
+		first, last string
+		read        bool
+	}{
+		{"", 50, "mail-59", "mail-10", true},
+		{"?unread=1", 59, "mail-00", "mail-58", false},
+		{"?limit=2", 2, "mail-59", "mail-58", true},
+		{"?limit=0", 60, "mail-59", "mail-00", true},
+		{"?unread=1&limit=2", 59, "mail-00", "mail-58", false},
+	} {
+		resp, err := srv.Client().Get(srv.URL + "/v1/inbox" + tc.query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var items []mailbox.Item
+		err = json.NewDecoder(resp.Body).Decode(&items)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != 200 || len(items) != tc.count {
+			t.Fatalf("%s: %d items, status %d, err %v", tc.query, len(items), resp.StatusCode, err)
+		}
+		if items[0].Message.ID != tc.first || items[len(items)-1].Message.ID != tc.last || items[0].Read != tc.read {
+			t.Fatalf("%s: unexpected order or read state", tc.query)
+		}
+	}
+	target, _ := url.Parse(srv.URL)
+	c := &Client{http: &http.Client{Transport: fileRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Query().Has("all") {
+			t.Error("client sent old all parameter")
+		}
+		r.URL.Scheme, r.URL.Host = target.Scheme, target.Host
+		return http.DefaultTransport.RoundTrip(r)
+	})}}
+	for _, tc := range []struct {
+		agent        string
+		unread       bool
+		limit, count int
+	}{
+		{"me", false, 50, 50}, {"me", false, 0, 60}, {"me", true, 50, 59}, {"other", false, 50, 0},
+	} {
+		items, err := c.Inbox(tc.agent, tc.unread, tc.limit)
+		if err != nil || len(items) != tc.count {
+			t.Fatalf("%+v: %d items, err %v", tc, len(items), err)
+		}
+	}
+}

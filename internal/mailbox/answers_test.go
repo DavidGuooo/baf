@@ -313,7 +313,7 @@ func openAnswerMailbox(t *testing.T, opts Options) *Mailbox {
 
 func checkAnswerInbox(t *testing.T, mb *Mailbox, agentName string, want int) []Item {
 	t.Helper()
-	items, err := mb.Inbox(agentName, true)
+	items, err := mb.Inbox(agentName, false, 0)
 	if err != nil || len(items) != want {
 		t.Fatalf("%s inbox = %+v, err = %v; want %d messages", agentName, items, err, want)
 	}

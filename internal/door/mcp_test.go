@@ -137,6 +137,20 @@ func TestMCPDiscovery(t *testing.T) {
 			tool.Annotations["readOnlyHint"] != (name == "inbox" || name == "outbox" || name == "status") {
 			t.Fatalf("bad tool: %+v", tool)
 		}
+		if name == "inbox" {
+			var schema struct {
+				Properties map[string]struct {
+					Type    string `json:"type"`
+					Default *bool  `json:"default"`
+				} `json:"properties"`
+			}
+			if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
+				t.Fatal(err)
+			}
+			if len(schema.Properties) != 0 {
+				t.Fatalf("inbox schema = %s", tool.InputSchema)
+			}
+		}
 		for _, key := range []string{"destructiveHint", "openWorldHint"} {
 			if v, exists := tool.Annotations[key]; !exists || v {
 				t.Fatalf("%s annotation %s = %v, exists = %v", name, key, v, exists)
@@ -172,7 +186,7 @@ func TestMCPNoticePrincipalAndPolicy(t *testing.T) {
 		"origin": "other/me", "kind": "request",
 	})
 	receipt := decodeResult[mailbox.Receipt](t, result)
-	items, err := h.mailbox.Inbox("codex", true)
+	items, err := h.mailbox.Inbox("codex", false, 0)
 	if err != nil || len(items) != 1 || items[0].From != "openai/dot" ||
 		items[0].Message.ID != receipt.ID || items[0].Message.FromAgent != "dot" ||
 		items[0].Message.Origin != "" || items[0].Message.Kind != envelope.Notice ||
@@ -232,11 +246,10 @@ func TestMCPRequestResultInboxRead(t *testing.T) {
 	if !item.Read || item.From != "relay/codex" {
 		t.Fatalf("read = %+v", item)
 	}
-	messages = decodeResult[inbox](t, h.call("openai/dot", tok.Access, "inbox", map[string]any{}))
-	if len(messages.Messages) != 0 {
-		t.Fatalf("read message still unread: %+v", messages)
+	if unread, err := h.mailbox.DoorInbox("openai/dot", true, 0); err != nil || len(unread) != 0 {
+		t.Fatalf("read message still unread: %+v, %v", unread, err)
 	}
-	messages = decodeResult[inbox](t, h.call("openai/dot", tok.Access, "inbox", map[string]any{"all": true}))
+	messages = decodeResult[inbox](t, h.call("openai/dot", tok.Access, "inbox", map[string]any{}))
 	if len(messages.Messages) != 1 {
 		t.Fatal("read deleted the message")
 	}
@@ -269,7 +282,7 @@ func TestMCPReply(t *testing.T) {
 				"reply_to": req.ID, "text": "answer", "state": state, "from_thread": "dot-thread",
 				"to": "other/claude", "from_agent": "claude",
 			}))
-			items, err := h.mailbox.Inbox("codex", true)
+			items, err := h.mailbox.Inbox("codex", false, 0)
 			if err != nil || len(items) != 1 {
 				t.Fatalf("inbox = %+v, %v", items, err)
 			}
@@ -283,7 +296,7 @@ func TestMCPReply(t *testing.T) {
 				got.Message.FromThread != "dot-thread" {
 				t.Fatalf("reply = %+v", got)
 			}
-			unread, err := h.mailbox.DoorInbox("openai/dot", false)
+			unread, err := h.mailbox.DoorInbox("openai/dot", true, 0)
 			if err != nil || len(unread) != 1 {
 				t.Fatal("reply marked request read", err)
 			}
@@ -306,7 +319,6 @@ func TestMCPToolFailuresAndFiles(t *testing.T) {
 		{"reply", map[string]any{"reply_to": "missing", "text": "x"}, "no such message"},
 		{"reply", map[string]any{"reply_to": "missing", "text": "x", "state": "unknown"}, "unknown result state"},
 		{"read", map[string]any{"id": "missing"}, "no such message"},
-		{"inbox", map[string]any{"all": "yes"}, "bad tool arguments"},
 	} {
 		wantToolError(t, h.call("openai/dot", tok.Access, tc.tool, tc.args), tc.reason)
 	}
@@ -373,7 +385,7 @@ func TestMCPRateLimit(t *testing.T) {
 			"id": incoming.ID, "reply_to": incoming.ID, "to": "me", "text": "limited",
 		}), "30 times a minute")
 	}
-	unread, err := h.mailbox.DoorInbox("openai/dot", false)
+	unread, err := h.mailbox.DoorInbox("openai/dot", true, 0)
 	if err != nil || len(unread) != 1 {
 		t.Fatalf("limited read changed inbox: %+v, %v", unread, err)
 	}
@@ -424,7 +436,7 @@ func TestMCPProtocolErrorsAndLimits(t *testing.T) {
 			t.Fatalf("notification: %d %s", resp.StatusCode, data)
 		}
 	}
-	if items, err := h.mailbox.Inbox("me", true); err != nil || len(items) != 0 {
+	if items, err := h.mailbox.Inbox("me", false, 0); err != nil || len(items) != 0 {
 		t.Fatal("notification sent mail", items, err)
 	}
 	for _, method := range []string{"GET", "DELETE"} {
@@ -488,4 +500,54 @@ func TestMCPOutboxScopedToToken(t *testing.T) {
 		t.Fatalf("already handed mail = %+v", waiting)
 	}
 	wantToolError(t, h.call("openai/dot", dot.Access, "outbox", map[string]any{"waiting": "yes"}), "bad tool arguments")
+}
+
+func TestMCPInboxRecent(t *testing.T) {
+	h := newHarness(t)
+	tok := h.token(codeForm(h.code("openai/dot")), 200)
+	for i := 0; i < 60; i++ {
+		if _, err := h.mailbox.Send(envelope.Envelope{ID: fmt.Sprintf("mail-%02d", i), Kind: envelope.Request, FromAgent: "codex", To: "openai/dot"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"mail-00", "mail-59"} {
+		if _, err := h.mailbox.DoorRead("openai/dot", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.mailbox.Send(envelope.Envelope{ID: "other-mail", Kind: envelope.Notice, FromAgent: "codex", To: "openai/other"}); err != nil {
+		t.Fatal(err)
+	}
+	type inbox struct {
+		Messages []mailbox.Item `json:"messages"`
+	}
+	for _, tc := range []struct {
+		args               map[string]any
+		count, first, step int
+	}{
+		{map[string]any{}, 50, 59, -1},
+	} {
+		items := decodeResult[inbox](t, h.call("openai/dot", tok.Access, "inbox", tc.args)).Messages
+		if len(items) != tc.count {
+			t.Fatalf("%v: %d items, want %d", tc.args, len(items), tc.count)
+		}
+		for i, item := range items {
+			n := tc.first + i*tc.step
+			if item.Message.ID != fmt.Sprintf("mail-%02d", n) || item.Read != (n == 59) {
+				t.Fatalf("%v: item %d = %+v", tc.args, i, item)
+			}
+		}
+	}
+	// Reply lookup must include old requests, whether read or unread.
+	for _, id := range []string{"mail-00", "mail-01"} {
+		receipt := decodeResult[mailbox.Receipt](t, h.call("openai/dot", tok.Access, "reply", map[string]any{"reply_to": id, "text": "answer"}))
+		item, err := h.mailbox.Read("codex", receipt.ID)
+		if err != nil || item.Message.ReplyTo != id {
+			t.Fatalf("reply: %+v, err %v", item, err)
+		}
+	}
+	items, err := h.mailbox.DoorInbox("openai/dot", true, 0)
+	if err != nil || len(items) != 58 {
+		t.Fatal("listing or reply marked mail read")
+	}
 }

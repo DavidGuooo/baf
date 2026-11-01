@@ -51,6 +51,9 @@ Continue the same Codex thread by passing the thread id the Result came from:
 ./baf request codex --to-thread <from_thread of the result> "And times 2?"
 ```
 
+`./baf inbox` lists the latest 50 messages, read and unread, newest first, with a READ
+column. Use `--as NAME` to select an agent. Listing does not mark mail read; `read` does. `--json` prints the same list as JSON.
+
 `./baf runs` lists the agent runs and how they ended.
 
 Attach files with `--file` (repeatable; up to 20, 100 MB each):

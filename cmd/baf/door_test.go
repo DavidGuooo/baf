@@ -61,7 +61,7 @@ func TestSendCommandToDoorAgent(t *testing.T) {
 	if err := send([]string{"openai/dot", "hello from Codex"}, envelope.Notice); err != nil {
 		t.Fatal(err)
 	}
-	items, err := mb.DoorInbox("openai/dot", false)
+	items, err := mb.DoorInbox("openai/dot", true, 0)
 	if err != nil || len(items) != 1 || items[0].From != "box/codex" || items[0].Message.Body.Text != "hello from Codex" {
 		t.Fatalf("inbox = %+v, err = %v", items, err)
 	}
