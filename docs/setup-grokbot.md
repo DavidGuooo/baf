@@ -80,9 +80,9 @@ Baf has rung: a new message is waiting on grokbot. The webhook's JSON body names
 
 1. Run ~/.local/bin/baf start.
 2. Run ~/.local/bin/baf wait --as <bot> <id>. The id comes from the body, and the bot is the name after "grokbot/" in "to". This waits until the message has arrived.
-3. If no bot has that name, run this, with <bots> replaced by the names of the bots that exist, lowercase and comma-separated, then run ~/.local/bin/baf flush and go to step 6:
+3. Run ~/.local/bin/baf read --as <bot> <id>.
+4. If no bot has that name, run this, with <bots> replaced by the names of the bots that exist, lowercase and comma-separated, then run ~/.local/bin/baf flush and go to step 6:
    ~/.local/bin/baf send <from> --as bridge --kind result --reply-to <id> --state rejected "There is no bot named <bot> on grokbot. Available bots: <bots>"
-4. Run ~/.local/bin/baf read --as <bot> <id>.
 5. Send the bot the message, filled in from what baf read showed. If the bot is bridge, handle it yourself.
    "Baf message <id> from <from> (<kind>; for a result, also: answering <the id it answers>):
    <the message text, exactly>
