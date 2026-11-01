@@ -75,3 +75,25 @@ func TestPrintNotifiedStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintAnswerDeadline(t *testing.T) {
+	sent := time.Date(2026, 11, 1, 12, 0, 0, 0, time.Local)
+	expired := sent.Add(time.Hour + time.Second)
+	for _, late := range []bool{false, true} {
+		s := mailbox.SentStatus{ID: "question", Kind: "request", SentAt: sent, AnswerExpiredAt: &expired}
+		if late {
+			s.Result = &mailbox.ResultInfo{ID: "answer", State: "completed", ReceivedAt: expired.Add(time.Minute)}
+		}
+		var out strings.Builder
+		printStatus(&out, s, expired.Add(time.Hour))
+		text := out.String()
+		if late {
+			if !strings.Contains(text, "result       completed") || !strings.Contains(text, "read it: baf read answer") ||
+				!strings.Contains(text, "came after the 1h deadline") || strings.Contains(text, "no answer within") {
+				t.Fatal(text)
+			}
+		} else if !strings.Contains(text, "no answer within 1h (told the sender 13:00:01)") || strings.Contains(text, "not yet") {
+			t.Fatal(text)
+		}
+	}
+}

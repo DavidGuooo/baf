@@ -111,7 +111,8 @@ func TestOlderDatabaseGetsNewColumns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{`ALTER TABLE messages DROP COLUMN notified_at`, `ALTER TABLE runs DROP COLUMN doing`, `ALTER TABLE runs DROP COLUMN doing_at`} {
+	for _, q := range []string{`ALTER TABLE messages DROP COLUMN notified_at`, `ALTER TABLE runs DROP COLUMN doing`, `ALTER TABLE runs DROP COLUMN doing_at`,
+		`ALTER TABLE messages DROP COLUMN answer_expired_at`, `ALTER TABLE outbox DROP COLUMN answer_expired_at`} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}

@@ -177,6 +177,9 @@ func Open(opts Options) (*Mailbox, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := m.expireAnswers(); err != nil {
+		slog.Error("expire unanswered requests", "err", err)
+	}
 	if err := m.cleanFiles(); err != nil {
 		slog.Error("clean files", "err", err)
 	}
@@ -408,10 +411,16 @@ func (m *Mailbox) Run(ctx context.Context) {
 		defer wg.Done()
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
+		answers := time.NewTicker(time.Minute)
+		defer answers.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-answers.C:
+				if err := m.expireAnswers(); err != nil {
+					slog.Error("expire unanswered requests", "err", err)
+				}
 			case <-ticker.C:
 				if err := m.cleanFiles(); err != nil {
 					slog.Error("clean files", "err", err)

@@ -395,6 +395,16 @@ func (m *Mailbox) failTx(tx *sql.Tx, seq int64, reason string) error {
 // The notice reaches the agent like any message, in the thread orig came
 // from, so a Codex agent is resumed in that thread.
 func (m *Mailbox) failureNoticeTx(tx *sql.Tx, orig envelope.Envelope, text string) error {
+	if err := m.senderNoticeTx(tx, orig, text); err != nil {
+		// The sending agent no longer exists here; nobody to tell.
+		slog.Error("deliver failure notice", "message", orig.ID, "err", err)
+	}
+	return nil
+}
+
+// senderNoticeTx also serves the answer deadline. Its caller records the
+// notice and the reason for it together, before waking the sender.
+func (m *Mailbox) senderNoticeTx(tx *sql.Tx, orig envelope.Envelope, text string) error {
 	n := envelope.Envelope{
 		V:         envelope.Version,
 		ID:        envelope.NewID(),
@@ -411,11 +421,7 @@ func (m *Mailbox) failureNoticeTx(tx *sql.Tx, orig envelope.Envelope, text strin
 	} else {
 		_, err = m.storeTx(tx, n, Principal{Node: m.node, Agent: SystemAgent}, false)
 	}
-	if err != nil {
-		// The sending agent no longer exists here; nobody to tell.
-		slog.Error("deliver failure notice", "to", n.To, "err", err)
-	}
-	return nil
+	return err
 }
 
 // OutItem is one message in the outbox, for `baf outbox`.

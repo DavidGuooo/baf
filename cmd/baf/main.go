@@ -45,7 +45,7 @@ Usage:
   baf serve                      run the mailbox daemon in the foreground
   baf start | stop               run it in the background (log: ~/.baf/baf.log), or stop it
   baf send ADDR [TEXT...]        send a notice (expects no answer)
-  baf request ADDR [TEXT...]     send a request (a Result comes back automatically)
+  baf request ADDR [TEXT...]     ask for a Result (no-answer notice after 1 hour)
   baf inbox [--all]              list unread messages on this machine (--all: read ones too)
   baf read ID                    show one message and mark it read
   baf status ID                  follow a message you sent: handed over, running (and doing what), answered
@@ -59,6 +59,8 @@ Usage:
 
 ADDR is node/agent, or just agent for one on this machine. TEXT "-" reads stdin;
 it may be left out when you attach files.
+Requests have a fixed one-hour answer deadline at the sender's mailbox. A notice
+closes an unanswered request for its sender; late Results still arrive and appear in status.
 On the Relay, ADDR may also be a Door agent such as openai/dot, named in the
 Tailscale policy. The Public door requires "door": {"enabled": true,
 "public_url": "https://YOUR-RELAY.YOUR-TAILNET.ts.net"} in config.json.

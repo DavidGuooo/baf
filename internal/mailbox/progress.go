@@ -119,6 +119,9 @@ type SentStatus struct {
 
 	// Result is the Result that answered a request, once it arrived here.
 	Result *ResultInfo `json:"result,omitempty"`
+
+	// AnswerExpiredAt is when baf told the sender no answer had arrived.
+	AnswerExpiredAt *time.Time `json:"answer_expired_at,omitempty"`
 }
 
 // ResultInfo names the Result that answered a request; `baf read ID` shows it.
@@ -153,14 +156,20 @@ func (m *Mailbox) sentStatus(ctx context.Context, from Principal, id string) (Se
 	switch {
 	case err == nil:
 		env, s.Handover, s.SentAt = outEnv, &out, out.CreatedAt
+		var expired sql.NullInt64
+		if err := m.db.QueryRow(`SELECT answer_expired_at FROM outbox WHERE id = ?`, id).Scan(&expired); err != nil {
+			return SentStatus{}, err
+		}
+		s.AnswerExpiredAt = expiredAt(expired)
 	case errors.Is(err, sql.ErrNoRows):
 		// Not for another node: maybe for an agent on this one.
 		var (
-			raw  []byte
-			sent int64
+			raw     []byte
+			sent    int64
+			expired sql.NullInt64
 		)
-		err := m.db.QueryRow(`SELECT envelope, received_at FROM messages WHERE sender_node = ? AND id = ?
-			AND (? = '' OR from_agent = ?)`, from.Node, id, from.Agent, from.Agent).Scan(&raw, &sent)
+		err := m.db.QueryRow(`SELECT envelope, received_at, answer_expired_at FROM messages WHERE sender_node = ? AND id = ?
+			AND (? = '' OR from_agent = ?)`, from.Node, id, from.Agent, from.Agent).Scan(&raw, &sent, &expired)
 		if errors.Is(err, sql.ErrNoRows) {
 			return SentStatus{}, ErrNotFound
 		}
@@ -171,6 +180,7 @@ func (m *Mailbox) sentStatus(ctx context.Context, from Principal, id string) (Se
 			return SentStatus{}, err
 		}
 		s.SentAt = time.UnixMilli(sent)
+		s.AnswerExpiredAt = expiredAt(expired)
 	default:
 		return SentStatus{}, err
 	}
@@ -215,12 +225,20 @@ func (m *Mailbox) sentStatus(ctx context.Context, from Principal, id string) (Se
 // resultFor finds the Result that answers req, if one has arrived. Only the
 // agent req went to can answer it.
 func (m *Mailbox) resultFor(req envelope.Envelope, from Principal) (*ResultInfo, error) {
+	return resultFor(m.db, req, from)
+}
+
+// A transaction uses the same lookup so an answer cannot arrive between
+// checking for it and storing the no-answer notice.
+func resultFor(db interface {
+	QueryRow(string, ...any) *sql.Row
+}, req envelope.Envelope, from Principal) (*ResultInfo, error) {
 	to, _ := envelope.ParseAddress(req.To)
 	var (
 		raw      []byte
 		received int64
 	)
-	err := m.db.QueryRow(`SELECT envelope, received_at FROM messages
+	err := db.QueryRow(`SELECT envelope, received_at FROM messages
 		WHERE kind = 'result' AND sender_node = ? AND from_agent = ? AND json_extract(envelope, '$.reply_to') = ?
 		AND json_extract(envelope, '$.to') = ?
 		ORDER BY seq LIMIT 1`, to.Node, to.Agent, req.ID, from.String()).Scan(&raw, &received)

@@ -5,8 +5,8 @@ Grok Bot, …) over your Tailscale network. Each agent's mailbox lives on its ow
 Tailscale says who is connecting and what they may do. Vocabulary:
 [`GLOSSARY.md`](GLOSSARY.md), decisions: [`docs/adr/`](docs/adr/).
 
-**Status:** agents on one machine send each other notices and requests, and every request
-gets a Result back automatically. Sending between machines is built (push over the tailnet,
+**Status:** agents on one machine send each other notices and requests. Agents baf runs
+return a Result automatically; agents with an inbox answer themselves. Sending between machines is built (push over the tailnet,
 Tailscale identity and permissions, retries for 24 hours, Grok's Bridge doorbell); its first
 real run needs the setup in [`docs/setup-grokbot.md`](docs/setup-grokbot.md).
 
@@ -38,6 +38,12 @@ In another terminal, ask Codex something. You are the agent `me`:
 `./baf status` follows a message you sent: whether it was handed over, whether its run has
 started and what the agent is doing ("running: go test ./..."), and whether the Result is back.
 The agent reports nothing itself; baf reads it from the agent's own output.
+
+Requests have a fixed **one-hour answer deadline**. If no Result has arrived, the sender's
+mailbox closes the request for its sender with one notice from `<node>/baf`, in the original
+thread. It checks at startup and about once a minute while running, even if the receiver
+is asleep. Requests already reported as undeliverable get no second notice. Handover and
+the receiver's work can continue; late Results still arrive, and `status` notes the delay.
 
 Continue the same Codex thread by passing the thread id the Result came from:
 

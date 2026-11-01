@@ -201,6 +201,14 @@ Codex's run finishes, the Result appears in the Dot's **inbox**. **status** repo
 progress and the Result id. Watch for events (below), then **read** the Result by id,
 or check inbox for answers.
 
+Every request has a fixed **one-hour answer deadline**, enforced by its sender's mailbox
+at startup and about once a minute while running. For a Door agent, that mailbox is the
+Relay, including requests forwarded to another machine. If no Result arrives, baf closes
+the request for its sender with one notice in the original thread. A Door agent receives
+it as inbox mail with the usual event; an already failed handover gets no second notice.
+This does not cancel handover or the receiver's work. Late Results are still delivered;
+**status** keeps `answer_expired_at` and shows any Result that later arrives.
+
 To ask the Dot something from the Relay:
 
 ```bash

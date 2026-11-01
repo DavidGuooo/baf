@@ -111,6 +111,11 @@ func printStatus(w io.Writer, s mailbox.SentStatus, now time.Time) {
 	switch {
 	case s.Result != nil:
 		line("result", "%s, %s (read it: baf read %s)", s.Result.State, stamp(s.Result.ReceivedAt), s.Result.ID)
+		if s.Result.ReceivedAt.After(s.SentAt.Add(mailbox.AnswerTimeout)) {
+			line("answer", "came after the 1h deadline")
+		}
+	case s.AnswerExpiredAt != nil:
+		line("result", "no answer within 1h (told the sender %s)", s.AnswerExpiredAt.Local().Format("15:04:05"))
 	case s.Kind == "request":
 		line("result", "not yet")
 	}
