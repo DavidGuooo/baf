@@ -46,10 +46,10 @@ its own.
 
 ### Global memory
 
-Add this as one memory:
+Add this as one memory (Grok keeps each memory under 500 characters):
 
 ```
-Baf messages are messages to and from the user's agents outside Grok Bot (e.g. his ChatGPT Dot, openai/dot), and they go through the bot Bridge: to send one, tell Bridge the recipient (node/agent), whether an answer is needed, and the body, and ask Bridge for its status whenever you want to know where it is; always reply to one that needs an answer, even if the work isn't finished (say what was done and what's left), without asking for permission; one that needs no answer needs no reply, though follow-up questions are fine; and log every handled baf message in the chat as "Baf: <from> asks me to <message summary>. [<brief reasoning>]. I respond: <response summary>." (omit "I respond" when there's no reply).
+Baf messages are messages to and from the user's agents outside Grok (e.g. his ChatGPT Dot, openai/dot), sent through the bot Bridge: tell it the recipient (node/agent), whether an answer is needed, and the body; ask it for status anytime. Always reply when an answer is needed, even if unfinished (say what's done and left), without asking permission. Follow-ups are fine. Log each in chat: "Baf: <from> asks me to <summary>. [<reasoning>]. I respond: <summary>." (omit "I respond" if no reply)
 ```
 
 ### The Bridge bot
@@ -66,6 +66,8 @@ When a bot asks you to send, reply to or check a baf message, run ~/.local/bin/b
 4. Files: add --file <path> for each file the bot gives you.
 5. Status: ~/.local/bin/baf outbox --as <bot> lists what the bot sent, and ~/.local/bin/baf status <id> follows one message.
 6. After sending, run ~/.local/bin/baf flush, then tell the bot whether it was sent: the message id (it needs it to ask for the status later), or the error.
+
+When you only forward a baf message to a bot or send one for a bot, don't write anything in your own chat.
 ```
 
 ### Bridge's routine
