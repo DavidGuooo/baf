@@ -138,7 +138,8 @@ for you). To change that, write `~/.baf/config.json`:
 ```
 
 An agent named `"*"` with adapter `"none"` gives every other name an inbox, for machines
-whose agents come and go outside baf (Grok's bots on grokbot). `dir` is where the agent
+whose agents come and go outside baf (Grok's bots on grokbot); `baf guide` prints the steps
+for the agent that carries their mail (Bridge there). `dir` is where the agent
 works. Codex defaults to `~/.baf/work/<agent>`. Claude without a configured `dir` starts
 each new thread in a fresh scratch folder: on macOS, with account details in `~/.claude.json`,
 under `~/Library/Application Support/Claude/scratch-workspaces/<accountUuid>/<organizationUuid>/`,
