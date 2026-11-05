@@ -68,7 +68,7 @@ func (m *Mailbox) progressVia(from Principal, id, relay string) (Progress, error
 		started, ended, doingAt sql.NullInt64
 	)
 	err := m.db.QueryRow(`SELECT json_extract(m.envelope, '$.to'), COALESCE(json_extract(m.envelope, '$.origin'), ''), m.state, m.received_at, m.read_at, m.notified_at,
-			r.state, r.thread_id, r.started_at, r.ended_at, r.doing, r.doing_at
+			r.state, CASE WHEN r.desktop = 1 THEN '' ELSE r.thread_id END, r.started_at, r.ended_at, r.doing, r.doing_at
 		FROM messages m LEFT JOIN runs r ON r.message_seq = m.seq
 		WHERE m.sender_node = ? AND m.id = ?
 		AND (? = '' OR m.from_agent = ?)

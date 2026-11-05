@@ -56,10 +56,39 @@ type Envelope struct {
 	// thread to continue (empty = start a new one).
 	FromThread string `json:"from_thread,omitempty"`
 	ToThread   string `json:"to_thread,omitempty"`
+	Run        *Run   `json:"run,omitempty"`
 
 	ReplyTo string `json:"reply_to,omitempty"` // set on a Result
 	Wake    string `json:"wake,omitempty"`     // a hint only; unused for now
 	Body    Body   `json:"body"`
+}
+
+// Run chooses how a new thread starts on the receiver.
+type Run struct {
+	Dir     string `json:"dir,omitempty"`     // on the receiver; relative = its home
+	Desktop bool   `json:"desktop,omitempty"` // hand the run to the Claude Desktop app
+}
+
+// ValidateRun is also used by the CLI before contacting the local mailbox.
+func (e *Envelope) ValidateRun() error {
+	if e.Run == nil {
+		return nil
+	}
+	switch {
+	case e.Kind != Notice && e.Kind != Request:
+		return errors.New("run is only allowed on a notice or request")
+	case e.ToThread != "":
+		return errors.New("run cannot be used with to_thread; run options start a new thread")
+	case e.Run.Desktop && e.Kind != Notice:
+		return errors.New("run.desktop is only allowed on a notice")
+	case e.Run.Dir == "" && !e.Run.Desktop:
+		return errors.New("run must set dir or desktop")
+	case strings.ContainsRune(e.Run.Dir, 0):
+		return errors.New("run.dir must not contain NUL")
+	case len(e.Run.Dir) > 1024:
+		return errors.New("run.dir must be at most 1024 bytes")
+	}
+	return nil
 }
 
 // Body is the message content.
@@ -91,6 +120,9 @@ func NewID() string {
 
 // Validate checks the fields every message must have.
 func (e *Envelope) Validate() error {
+	if err := e.ValidateRun(); err != nil {
+		return err
+	}
 	if e.V != Version {
 		return fmt.Errorf("unsupported envelope version %d", e.V)
 	}

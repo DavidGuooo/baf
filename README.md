@@ -65,6 +65,22 @@ Attach files with `--file` (repeatable; up to 20, 100 MB each):
 The agent's prompt lists where each file was saved on its machine, and `./baf read` shows the
 same paths (under `~/.baf/files/in/`).
 
+`send` and `request` take `--dir PATH`: the folder on the receiver's machine to run in.
+Relative paths, `~` and `~/...` use the receiver's home; quote `~` to keep your own shell
+from expanding it. Missing folders are created. Use this only for a new thread: follow-ups
+with `--to-thread` reuse the folder recorded when that thread ran.
+
+```bash
+./baf request imac/claude --dir Documents/GitHub/baf "Review this project."
+./baf send imac/claude --dir Documents/GitHub/baf --desktop "Work on this with the owner."
+```
+
+`--desktop` opens the Claude session in the receiver's Claude Desktop app when the run ends.
+It requires a notice (`send`) starting a new thread, and a Claude agent. The owner continues
+in the app and, when done, asks Claude to report the outcome: the prompt supplies a `send`
+command from `me`. Handed-off threads refuse `--to-thread`; leave it out to start another.
+Door agents cannot use either run option.
+
 ## Other machines
 
 Address an agent on another machine as `node/agent`, using its Tailscale name:
@@ -86,6 +102,17 @@ intact. Who may message whom
 is set only in your Tailscale policy: paste [`deploy/tailscale-policy.hujson`](deploy/tailscale-policy.hujson)
 into it. Without a matching grant, the receiver refuses the message and the sender gets a
 notice saying why.
+
+Remote `--dir` also needs a `dirs` field in one of the sender's grants, for example:
+
+```json
+{"to": ["claude", "codex"], "dirs": ["Documents/GitHub"]}
+```
+
+Entries use the receiver's home for relative paths and `~`. A folder must equal or be inside
+an allowed entry after cleaning paths and resolving symlinks; `"*"` allows any folder.
+Without `dirs`, a remote sender cannot use `--dir`. Local senders may choose any folder.
+`--desktop` needs no additional grant.
 
 `./baf outbox --as me` lists recent mail sent as `me` to other nodes, newest first, so
 you can find an id for `baf status`. `--limit N` lists more than the default 50.
@@ -112,7 +139,11 @@ for you). To change that, write `~/.baf/config.json`:
 
 An agent named `"*"` with adapter `"none"` gives every other name an inbox, for machines
 whose agents come and go outside baf (Grok's bots on grokbot). `dir` is where the agent
-works (default `~/.baf/work/<agent>`). Requests run in each
+works. Codex defaults to `~/.baf/work/<agent>`. Claude without a configured `dir` starts
+each new thread in a fresh scratch folder: on macOS, with account details in `~/.claude.json`,
+under `~/Library/Application Support/Claude/scratch-workspaces/<accountUuid>/<organizationUuid>/`,
+so Desktop lists it under "This computer"; otherwise under `<BAF_HOME>/work/<agent>/`.
+Scratch names are `scratch-<UTC date>-<6 random hex digits>`. Requests run in each
 agent's own auto mode, so nothing waits for a permission prompt: Codex with
 `--approve-for-me` (workspace-write sandbox), Claude Code with `--permission-mode auto
 --permission-prompts none`.

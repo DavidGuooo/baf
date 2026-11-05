@@ -3,7 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/url"
+	"os/exec"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/DavidGuooo/baf/internal/envelope"
 	"github.com/google/uuid"
@@ -13,8 +18,24 @@ import (
 // For a new thread we choose the session id ourselves, so it is recorded
 // before the process even starts.
 type Claude struct {
-	Bin string // path to claude; defaults to "claude"
-	Dir string // working directory
+	Bin         string                                         // path to claude; defaults to "claude"
+	Dir         string                                         // working directory
+	OpenCommand func(context.Context, string, ...string) error // tests replace macOS open
+}
+
+func (c Claude) OpenDesktop(threadID string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("Claude Desktop hand-off requires macOS")
+	}
+	command := c.OpenCommand
+	if command == nil {
+		command = func(ctx context.Context, name string, args ...string) error {
+			return exec.CommandContext(ctx, name, args...).Run()
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return command(ctx, "open", "claude://resume?session="+url.QueryEscape(threadID))
 }
 
 // claudeLine is the part of every stream-json line we read first.
@@ -52,6 +73,10 @@ type claudeResult struct {
 }
 
 func (c Claude) Run(ctx context.Context, job Job, report Report) Outcome {
+	dir := c.Dir
+	if job.Dir != "" {
+		dir = job.Dir
+	}
 	bin := c.Bin
 	if bin == "" {
 		bin = "claude"
@@ -77,8 +102,13 @@ func (c Claude) Run(ctx context.Context, job Job, report Report) Outcome {
 		gotResult bool
 		stdout    = &tailBuffer{max: 4 << 10} // the end of its output, for a failure message
 	)
-	env := append(job.Env, "BAF_THREAD="+threadID) // so the agent's own `baf send` names its thread
-	res := runProcess(ctx, bin, args, c.Dir, env, func(line []byte) {
+	env := job.Env
+	if job.Message.Run == nil || !job.Message.Run.Desktop {
+		env = append(env, "BAF_THREAD="+threadID) // so the agent's own `baf send` names its thread
+	} else {
+		env = WithoutIdentity(env) // a Desktop run speaks as the owner (me)
+	}
+	res := runProcess(ctx, bin, args, dir, env, func(line []byte) {
 		stdout.Write(line)
 		stdout.Write([]byte{'\n'})
 		var l claudeLine
@@ -93,7 +123,7 @@ func (c Claude) Run(ctx context.Context, job Job, report Report) Outcome {
 			}
 			for _, part := range a.Message.Content {
 				if part.Type == "tool_use" {
-					report.doing(claudeDoing(part.Name, part.Input, c.Dir))
+					report.doing(claudeDoing(part.Name, part.Input, dir))
 				}
 			}
 		case "result":

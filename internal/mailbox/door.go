@@ -75,6 +75,9 @@ func (m *Mailbox) doorDestination(to envelope.Address) (bool, error) {
 // supplies doorAgent from its token, never from fields in the message.
 // Authenticated file uploads from Door agents are not supported yet.
 func (m *Mailbox) FromDoor(doorAgent string, env envelope.Envelope) (Receipt, error) {
+	if env.Run != nil {
+		return Receipt{}, reject("Door agents may not carry run options")
+	}
 	from, peer, err := m.requireDoor(doorAgent)
 	if err != nil {
 		return Receipt{}, err
@@ -110,7 +113,7 @@ func (m *Mailbox) FromDoor(doorAgent string, env envelope.Envelope) (Receipt, er
 	var r Receipt
 	err = m.inTx(func(tx *sql.Tx) (err error) {
 		if node == m.node {
-			r, err = m.storeTx(tx, env, from)
+			r, err = m.storeTx(tx, env, from, "")
 		} else {
 			r, err = m.enqueueTx(tx, env, envelope.Address{Node: node, Agent: to.Agent})
 		}

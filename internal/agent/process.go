@@ -28,9 +28,14 @@ type processResult struct {
 // SIGKILL after stopGrace.
 func runProcess(ctx context.Context, bin string, args []string, dir string, extraEnv []string,
 	onLine func([]byte)) processResult {
+	if dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return processResult{exitCode: -1, startErr: err}
+		}
+	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(cleanEnv(os.Environ()), extraEnv...)
+	cmd.Env = append(cleanEnv(WithoutIdentity(os.Environ())), extraEnv...)
 	cmd.Stdin = nil // reads from /dev/null
 	// Own process group, so stopping the agent also stops the tools it started.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -77,6 +82,18 @@ func cleanEnv(env []string) []string {
 			continue
 		}
 		out = append(out, kv)
+	}
+	return out
+}
+
+// WithoutIdentity prevents a run from inheriting the daemon's caller identity.
+// Desktop runs also use it on their extra environment to speak as the owner.
+func WithoutIdentity(env []string) []string {
+	out := env[:0:0]
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, "BAF_AGENT=") && !strings.HasPrefix(kv, "BAF_THREAD=") {
+			out = append(out, kv)
+		}
 	}
 	return out
 }

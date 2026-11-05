@@ -68,6 +68,8 @@ Tailscale policy. The Public door requires "door": {"enabled": true,
 
 Options for send and request:
   --file PATH        attach a file (repeatable; up to 20, 100 MB each)
+  --dir PATH         folder on the receiver's machine to run in; relative = its home
+  --desktop          hand the Claude run to the Claude Desktop app when it ends (notice only)
   --as NAME          send as this agent (default $BAF_AGENT, else "me")
   --to-thread ID     continue the receiver's thread with this id
   --from-thread ID   your own thread id (default $BAF_THREAD)
@@ -157,6 +159,8 @@ func send(args []string, kind envelope.Kind) error {
 	kindFlag := fs.String("kind", string(kind), "")
 	replyTo := fs.String("reply-to", "", "")
 	state := fs.String("state", "", "")
+	dir := fs.String("dir", "", "folder on the receiver's machine to run in; relative = its home")
+	desktop := fs.Bool("desktop", false, "hand the Claude run to the Claude Desktop app when it ends (notice only)")
 	var paths filePaths
 	fs.Var(&paths, "file", "attach a file (repeatable; up to 20, 100 MB each)")
 	pos, err := parse(fs, args)
@@ -165,6 +169,23 @@ func send(args []string, kind envelope.Kind) error {
 	}
 	if len(pos) == 0 || (len(pos) < 2 && len(paths) == 0) {
 		return errors.New("usage: baf " + string(kind) + " ADDR [TEXT...] [--file PATH]...")
+	}
+	var run *envelope.Run
+	dirSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "dir" {
+			dirSet = true
+		}
+	})
+	if dirSet && *dir == "" {
+		return errors.New("run.dir must not be empty")
+	}
+	if dirSet || *desktop {
+		run = &envelope.Run{Dir: *dir, Desktop: *desktop}
+	}
+	check := envelope.Envelope{Kind: envelope.Kind(*kindFlag), ToThread: *toThread, Run: run}
+	if err := check.ValidateRun(); err != nil {
+		return err
 	}
 	files, err := openFiles(paths)
 	if err != nil {
@@ -200,8 +221,12 @@ func send(args []string, kind envelope.Kind) error {
 		FromAgent:  *as,
 		FromThread: *fromThread,
 		ToThread:   *toThread,
+		Run:        run,
 		ReplyTo:    *replyTo,
 		Body:       envelope.Body{Text: text, State: resultState(envelope.Kind(*kindFlag), *state)},
+	}
+	if err := env.Validate(); err != nil {
+		return err
 	}
 	for i, f := range files {
 		file, err := c.AddFile(filepath.Base(paths[i]), f)

@@ -45,6 +45,9 @@ type codexItem struct {
 }
 
 func (c Codex) Run(ctx context.Context, job Job, report Report) Outcome {
+	if job.Dir != "" {
+		c.Dir = job.Dir
+	}
 	bin := c.Bin
 	if bin == "" {
 		bin = "codex"

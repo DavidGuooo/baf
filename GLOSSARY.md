@@ -90,5 +90,13 @@ _Avoid_: conversation id (replaced)
 **Run**:
 One attempt by an agent to carry out a Request; a run whose outcome is unknown is never repeated automatically, and the sender decides whether to try again.
 
+**Run folder**:
+The folder on the receiving node where a thread's work happens, chosen when the thread starts and kept for its follow-ups.
+_Avoid_: sender's folder, agent per repository
+
+**Desktop hand-off**:
+Giving a Claude thread to the owner in the Claude Desktop app after its run ends. The app then owns continuation of that thread; the owner can have Claude report the outcome with a Notice.
+_Avoid_: automatic Result, shared session
+
 **Agent adapter**:
 What connects a Mailbox to one kind of agent: how to run or wake it, and how its threads and outcomes map back.

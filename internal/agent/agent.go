@@ -18,8 +18,11 @@ type Job struct {
 	Sender  envelope.Address // who the mailbox believes sent it
 
 	// ResumeThread is the agent's own thread to continue. Empty means start
-	// a new thread. The mailbox has already checked the sender may use it.
+	// a new thread. The mailbox refuses threads handed to the Desktop app.
 	ResumeThread string
+	Dir          string // empty uses the adapter's default
+	BafBinary    string // absolute path for the Desktop hand-off command
+	BafHome      string // nonempty only when the command needs BAF_HOME
 
 	// Env is extra environment for the agent's process (BAF_AGENT and so on),
 	// so the agent can call `baf send` itself.
@@ -50,6 +53,11 @@ type Outcome struct {
 // process and returns a Failed outcome.
 type Adapter interface {
 	Run(ctx context.Context, job Job, report Report) Outcome
+}
+
+// DesktopOpener hands a finished run's thread to the owner's app.
+type DesktopOpener interface {
+	OpenDesktop(threadID string) error
 }
 
 // Report is how an adapter tells the mailbox about a run while it runs.
@@ -122,7 +130,17 @@ func Prompt(job Job) string {
 	case envelope.Notice:
 		b.WriteString("No reply is expected and nothing is sent back automatically.\n")
 	}
-	if m.FromThread != "" {
+	if m.Run != nil && m.Run.Desktop {
+		b.WriteString("After this run, baf opens this session in the Claude Desktop app for the owner. Do the work now and don't message the sender during this run. When the owner says the work is done, report the outcome with exactly:\n")
+		if job.BafHome != "" {
+			fmt.Fprintf(&b, "BAF_HOME=%s ", shellWord(job.BafHome))
+		}
+		fmt.Fprintf(&b, "%s send %s --as me", shellWord(job.BafBinary), job.Sender)
+		if m.FromThread != "" {
+			fmt.Fprintf(&b, " --to-thread %s", shellWord(m.FromThread))
+		}
+		b.WriteString(" \"<outcome>\"\n")
+	} else if m.FromThread != "" {
 		fmt.Fprintf(&b, "To message them yourself: baf send %s --to-thread %s \"text\"\n", job.Sender, m.FromThread)
 	} else {
 		fmt.Fprintf(&b, "To message them yourself: baf send %s \"text\"\n", job.Sender)
@@ -136,4 +154,11 @@ func Prompt(job Job) string {
 	b.WriteString("--- message ---\n")
 	b.WriteString(m.Body.Text)
 	return b.String()
+}
+
+func shellWord(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-:") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/DavidGuooo/baf/internal/envelope"
+	"github.com/DavidGuooo/baf/internal/runfolder"
 
 	"tailscale.com/client/local"
 	"tailscale.com/tailcfg"
@@ -31,9 +32,26 @@ const Capability = "github.com/DavidGuooo/baf/msg"
 //
 //	"app": {"github.com/DavidGuooo/baf/msg": [{"to": ["codex", "claude"]}]}
 type Grant struct {
+	Dirs  []string            `json:"dirs,omitempty"`  // run folders on the receiver; "*" = any
 	To    []string            `json:"to,omitempty"`    // agents the sender may message; "*" = any
 	Relay bool                `json:"relay,omitempty"` // may hold Door agents and forward for them
 	Door  map[string][]string `json:"door,omitempty"`  // Door agent address -> agents it may message
+}
+
+// MayRunIn checks an already resolved folder against the sender's grants.
+func (p Peer) MayRunIn(dir, home string) bool {
+	for _, grant := range p.Grants {
+		for _, entry := range grant.Dirs {
+			if entry == "*" {
+				return true
+			}
+			root, err := runfolder.Resolve(entry, home)
+			if err == nil && runfolder.Contains(root, dir) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Peer is who is connecting, as Tailscale reports it.

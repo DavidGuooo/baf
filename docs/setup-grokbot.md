@@ -64,8 +64,9 @@ When a bot asks you to send, reply to or check a baf message, run ~/.local/bin/b
 2. Reply to baf message <id>: ~/.local/bin/baf send <from> --as <bot> --kind result --reply-to <id> --from-thread <bot> --to-thread <thread> -
 3. <thread> keeps the conversation together. For a reply, it is the from_thread of message <id>: ~/.local/bin/baf read --as <bot> <id> shows it and <from>. For a new message, it is the from_thread of the latest message that address sent the bot: find it with ~/.local/bin/baf inbox --as <bot>. If there is none, leave out --to-thread.
 4. Files: add --file <path> for each file the bot gives you.
-5. Status: ~/.local/bin/baf outbox --as <bot> lists what the bot sent, and ~/.local/bin/baf status <id> follows one message.
-6. After sending, run ~/.local/bin/baf flush, then tell the bot whether it was sent: the message id (it needs it to ask for the status later), or the error.
+5. If the bot names a folder on the receiving machine, add --dir <path relative to that machine's home>; if it asks for the Claude Desktop app, use send (a notice, never request) with --desktop. Leave out --to-thread for either option to start a new thread.
+6. Status: ~/.local/bin/baf outbox --as <bot> lists what the bot sent, and ~/.local/bin/baf status <id> follows one message.
+7. After sending, run ~/.local/bin/baf flush, then tell the bot whether it was sent: the message id (it needs it to ask for the status later), or the error.
 
 When you only forward a baf message to a bot or send one for a bot, don't write anything in your own chat.
 ```

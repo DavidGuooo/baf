@@ -70,33 +70,11 @@ func Handler(mb *mailbox.Mailbox, id Identity) http.Handler {
 			reply(w, http.StatusBadRequest, pushResponse{Error: "bad envelope: " + err.Error(), Rejected: true})
 			return
 		}
-		to, err := envelope.ParseAddress(env.To)
-		if err != nil {
-			reply(w, http.StatusBadRequest, pushResponse{Error: "bad to: " + err.Error(), Rejected: true})
-			return
-		}
 		// Printed so the first real run shows what Tailscale delivered (T4).
 		slog.Info("push received", "from_node", peer.Node, "tags", peer.Tags, "login", peer.Login,
 			"from_agent", env.FromAgent, "to", env.To, "kind", env.Kind, "id", env.ID, "grants", grantsJSON(peer.Grants))
 
-		from, err := mb.CheckIncoming(r.Context(), peer, to, env.Origin)
-		if err != nil {
-			var rej *mailbox.Rejection
-			final := errors.As(err, &rej)
-			code := http.StatusServiceUnavailable
-			if final {
-				code = http.StatusForbidden
-			}
-			reply(w, code, pushResponse{Error: err.Error(), Rejected: final})
-			return
-		}
-		var receipt mailbox.Receipt
-		if env.Origin == "" {
-			from.Agent = env.FromAgent
-			receipt, err = mb.Accept(env, from)
-		} else {
-			receipt, err = mb.AcceptForwarded(env, from, peer.Node)
-		}
+		receipt, err := mb.AcceptPush(r.Context(), env, peer)
 		var rej *mailbox.Rejection
 		switch {
 		case errors.As(err, &rej):

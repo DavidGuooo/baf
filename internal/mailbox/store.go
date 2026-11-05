@@ -70,6 +70,9 @@ CREATE INDEX IF NOT EXISTS outbox_by_queue ON outbox (state, queue, seq);
 // TABLE IF NOT EXISTS leaves an older table as it was, so openDB adds them,
 // then runs then, if any, to fill in the rows already there.
 var addedColumns = []struct{ table, column, decl, then string }{
+	{"messages", "run_dir", "TEXT NOT NULL DEFAULT ''", ""},
+	{"runs", "dir", "TEXT NOT NULL DEFAULT ''", ""},
+	{"runs", "desktop", "INTEGER NOT NULL DEFAULT 0", ""},
 	// Requests sent before the answer deadline existed get no notice.
 	{"messages", "answer_expired_at", "INTEGER", `UPDATE messages SET answer_expired_at = 0 WHERE kind = 'request'`},
 	{"outbox", "answer_expired_at", "INTEGER", `UPDATE outbox SET answer_expired_at = 0 WHERE json_extract(envelope, '$.kind') = 'request'`},

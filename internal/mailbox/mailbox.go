@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -83,6 +84,13 @@ type Options struct {
 	// RunEnv returns extra environment for an agent's run. Optional.
 	RunEnv func(agentName string) []string
 
+	// NewThreadDir chooses a resolved folder when a new thread has no run.dir.
+	// Nil, or an empty result, keeps the adapter's default.
+	NewThreadDir func(agentName string) (string, error)
+	UserHome     string // receiver's home; defaults to os.UserHomeDir
+	BafBinary    string
+	BafHome      string // nonempty when hand-off commands need BAF_HOME
+
 	// Transport pushes messages to other nodes. Without one, the mailbox
 	// only delivers between its own agents.
 	Transport Transport
@@ -101,20 +109,24 @@ type Options struct {
 
 // Mailbox is safe for concurrent use.
 type Mailbox struct {
-	db          *sql.DB
-	node        string
-	filesDir    string
-	filesMu     sync.Mutex
-	agents      map[string]agent.Adapter
-	runEnv      func(string) []string
-	now         func() time.Time
-	transport   Transport
-	doorbell    Doorbell
-	door        DoorIdentity
-	eventsMu    sync.RWMutex
-	events      DoorEvents
-	giveUpAfter time.Duration
-	retryDelay  time.Duration
+	db           *sql.DB
+	node         string
+	filesDir     string
+	filesMu      sync.Mutex
+	agents       map[string]agent.Adapter
+	runEnv       func(string) []string
+	newThreadDir func(string) (string, error)
+	userHome     string
+	bafBinary    string
+	bafHome      string
+	now          func() time.Time
+	transport    Transport
+	doorbell     Doorbell
+	door         DoorIdentity
+	eventsMu     sync.RWMutex
+	events       DoorEvents
+	giveUpAfter  time.Duration
+	retryDelay   time.Duration
 
 	wake       chan struct{} // nudges Run to look for claimable messages
 	outboxWake chan struct{} // nudges the outbox to look for messages to push
@@ -122,6 +134,13 @@ type Mailbox struct {
 
 // Open opens the mailbox and settles anything a previous crash left behind.
 func Open(opts Options) (*Mailbox, error) {
+	if opts.UserHome == "" {
+		var err error
+		opts.UserHome, err = os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -156,19 +175,23 @@ func Open(opts Options) (*Mailbox, error) {
 		return nil, err
 	}
 	m := &Mailbox{
-		db:          db,
-		node:        opts.Node,
-		filesDir:    opts.FilesDir,
-		agents:      opts.Agents,
-		runEnv:      opts.RunEnv,
-		now:         opts.Now,
-		transport:   opts.Transport,
-		doorbell:    opts.Doorbell,
-		door:        opts.Door,
-		giveUpAfter: opts.GiveUpAfter,
-		retryDelay:  opts.RetryDelay,
-		wake:        make(chan struct{}, 1),
-		outboxWake:  make(chan struct{}, 1),
+		db:           db,
+		node:         opts.Node,
+		filesDir:     opts.FilesDir,
+		agents:       opts.Agents,
+		runEnv:       opts.RunEnv,
+		newThreadDir: opts.NewThreadDir,
+		userHome:     opts.UserHome,
+		bafBinary:    opts.BafBinary,
+		bafHome:      opts.BafHome,
+		now:          opts.Now,
+		transport:    opts.Transport,
+		doorbell:     opts.Doorbell,
+		door:         opts.Door,
+		giveUpAfter:  opts.GiveUpAfter,
+		retryDelay:   opts.RetryDelay,
+		wake:         make(chan struct{}, 1),
+		outboxWake:   make(chan struct{}, 1),
 	}
 	if err := m.recover(); err != nil {
 		db.Close()
@@ -234,7 +257,7 @@ func (m *Mailbox) Send(env envelope.Envelope) (Receipt, error) {
 func (m *Mailbox) Accept(env envelope.Envelope, from Principal) (Receipt, error) {
 	var r Receipt
 	err := m.inTx(func(tx *sql.Tx) (err error) {
-		r, err = m.storeTx(tx, env, from)
+		r, err = m.storeTx(tx, env, from, "")
 		return err
 	})
 	if err == nil {
@@ -248,7 +271,7 @@ func (m *Mailbox) Accept(env envelope.Envelope, from Principal) (Receipt, error)
 func (m *Mailbox) AcceptForwarded(env envelope.Envelope, from Principal, relay string) (Receipt, error) {
 	var r Receipt
 	err := m.inTx(func(tx *sql.Tx) (err error) {
-		r, err = m.storeTx(tx, env, from)
+		r, err = m.storeTx(tx, env, from, "")
 		if err == nil && !r.Duplicate {
 			_, err = tx.Exec(`UPDATE messages SET forwarding_node = ? WHERE sender_node = ? AND id = ?`, relay, from.Node, env.ID)
 		}
@@ -276,9 +299,9 @@ func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 	}
 	switch {
 	case to.Node == m.node:
-		return m.storeTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent})
+		return m.storeTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent}, "")
 	case node == m.node:
-		return m.storeInboxTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent}, to.String(), nil)
+		return m.storeInboxTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent}, to.String(), nil, "")
 	default:
 		return m.enqueueTx(tx, env, envelope.Address{Node: node, Agent: to.Agent})
 	}
@@ -287,7 +310,9 @@ func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 // storeTx stores env for one of this node's agents. Any sender may continue
 // any of the agent's threads with to_thread; the policy decides who may
 // message the agent at all.
-func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal) (Receipt, error) {
+// dir is run.dir already resolved and checked against the sender's grants
+// (AcceptPush); empty means it still needs checking, or there is none.
+func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, dir string) (Receipt, error) {
 	env.FromAgent = from.Agent
 	if err := env.Validate(); err != nil {
 		return Receipt{}, &Rejection{Reason: err.Error()}
@@ -297,18 +322,18 @@ func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal) (Re
 		if _, _, err := m.requireDoor(to.String()); err != nil {
 			return Receipt{}, err
 		}
-		return m.storeInboxTx(tx, env, from, to.String(), nil)
+		return m.storeInboxTx(tx, env, from, to.String(), nil, dir)
 	}
 	adapter, ok := m.agentFor(to.Agent)
 	if !ok {
 		return Receipt{}, reject("there is no agent %q on %s", to.Agent, m.node)
 	}
-	return m.storeInboxTx(tx, env, from, to.Agent, adapter)
+	return m.storeInboxTx(tx, env, from, to.Agent, adapter, dir)
 }
 
 // storeInboxTx uses the full address as the inbox name for a Door agent.
 // Its nil adapter means mail waits here until the Door agent reads it.
-func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal, inbox string, adapter agent.Adapter) (Receipt, error) {
+func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal, inbox string, adapter agent.Adapter, dir string) (Receipt, error) {
 	// A retry of a message already stored gets the same receipt again.
 	var storedAt int64
 	var fromAgent string
@@ -321,6 +346,10 @@ func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal
 		return Receipt{ID: env.ID, StoredAt: time.UnixMilli(storedAt), Duplicate: true}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		return Receipt{}, err
+	}
+	dir, err = m.checkRun(tx, env, from, inbox, adapter, dir)
+	if err != nil {
 		return Receipt{}, err
 	}
 
@@ -337,9 +366,9 @@ func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal
 	}
 	now := m.now()
 	_, err = tx.Exec(`INSERT INTO messages
-		(sender_node, id, kind, from_agent, to_agent, to_thread, envelope, state, received_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		from.Node, env.ID, env.Kind, env.FromAgent, inbox, env.ToThread, raw, state, now.UnixMilli())
+		(sender_node, id, kind, from_agent, to_agent, to_thread, envelope, state, received_at, run_dir)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		from.Node, env.ID, env.Kind, env.FromAgent, inbox, env.ToThread, raw, state, now.UnixMilli(), dir)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -422,6 +451,7 @@ type claimed struct {
 	agent  string
 	env    envelope.Envelope
 	sender Principal
+	dir    string
 }
 
 // claim marks every message that can start now as running and records its
@@ -431,7 +461,7 @@ func (m *Mailbox) claim() ([]claimed, error) {
 	var out []claimed
 	err := m.inTx(func(tx *sql.Tx) error {
 		out = nil
-		rows, err := tx.Query(`SELECT seq, sender_node, to_agent, to_thread, envelope
+		rows, err := tx.Query(`SELECT seq, sender_node, to_agent, to_thread, envelope, run_dir
 			FROM messages WHERE state = 'pending' ORDER BY seq`)
 		if err != nil {
 			return err
@@ -440,11 +470,12 @@ func (m *Mailbox) claim() ([]claimed, error) {
 			seq                     int64
 			node, agentName, thread string
 			raw                     []byte
+			dir                     string
 		}
 		var list []pending
 		for rows.Next() {
 			var p pending
-			if err := rows.Scan(&p.seq, &p.node, &p.agentName, &p.thread, &p.raw); err != nil {
+			if err := rows.Scan(&p.seq, &p.node, &p.agentName, &p.thread, &p.raw, &p.dir); err != nil {
 				rows.Close()
 				return err
 			}
@@ -482,8 +513,9 @@ func (m *Mailbox) claim() ([]claimed, error) {
 				m.now().UnixMilli(), p.seq); err != nil {
 				return err
 			}
-			res, err := tx.Exec(`INSERT INTO runs (message_seq, agent, thread_id, state, started_at)
-				VALUES (?, ?, ?, 'running', ?)`, p.seq, p.agentName, p.thread, m.now().UnixMilli())
+			desktop := env.Run != nil && env.Run.Desktop
+			res, err := tx.Exec(`INSERT INTO runs (message_seq, agent, thread_id, state, started_at, desktop)
+				VALUES (?, ?, ?, 'running', ?, ?)`, p.seq, p.agentName, p.thread, m.now().UnixMilli(), desktop)
 			if err != nil {
 				return err
 			}
@@ -493,6 +525,7 @@ func (m *Mailbox) claim() ([]claimed, error) {
 				agent:  p.agentName,
 				env:    env,
 				sender: Principal{Node: p.node, Agent: env.FromAgent},
+				dir:    p.dir,
 			})
 		}
 		return nil
@@ -508,7 +541,22 @@ func (m *Mailbox) execute(ctx context.Context, c claimed) {
 		Sender:       c.sender,
 		ResumeThread: c.env.ToThread,
 		Env:          m.runEnv(c.agent),
+		BafBinary:    m.bafBinary,
+		BafHome:      m.bafHome,
 	}
+	desktop := c.env.Run != nil && c.env.Run.Desktop
+	if desktop {
+		job.Env = agent.WithoutIdentity(job.Env)
+	}
+	dir, err := m.runDir(c)
+	if err != nil {
+		if err := m.finish(c, agent.Outcome{State: envelope.Failed, Text: "prepare run folder: " + err.Error()}); err != nil {
+			slog.Error("record run end", "run", c.runID, "err", err)
+		}
+		m.signal()
+		return
+	}
+	job.Dir = dir
 	for _, f := range c.env.Body.Files {
 		job.Files = append(job.Files, agent.File{Name: f.Name, Size: f.Size, Path: m.filePath(c.sender.Node, c.env.ID, f.Name)})
 	}
@@ -540,6 +588,19 @@ func (m *Mailbox) execute(ctx context.Context, c claimed) {
 	}
 	slog.Info("run ended", "run", c.runID, "agent", c.agent, "state", out.State)
 	m.signal() // the thread is free again
+	if desktop {
+		var thread string
+		if err := m.db.QueryRow(`SELECT thread_id FROM runs WHERE id = ?`, c.runID).Scan(&thread); err != nil {
+			slog.Warn("read Desktop thread", "run", c.runID, "err", err)
+		} else if opener, ok := adapter.(agent.DesktopOpener); ok && thread != "" {
+			// App startup must not delay recording or dispatching another run.
+			go func() {
+				if err := opener.OpenDesktop(thread); err != nil {
+					slog.Warn("open Claude Desktop", "run", c.runID, "err", err)
+				}
+			}()
+		}
+	}
 }
 
 // finish records a run's end and, for a request, queues its Result, in one

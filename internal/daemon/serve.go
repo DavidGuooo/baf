@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,22 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 	}
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
+	home, err := filepath.Abs(home)
+	if err != nil {
+		return err
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	commandHome := home
+	if home == filepath.Join(userHome, ".baf") {
+		commandHome = ""
+	}
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
@@ -99,14 +116,18 @@ func Serve(ctx context.Context, home string, cfg config.Config, ts *tailnet.Clie
 		doorIdentity = ts
 	}
 	mb, err := mailbox.Open(mailbox.Options{
-		Path:        filepath.Join(home, "mailbox.db"),
-		Node:        node,
-		Agents:      adapters,
-		RunEnv:      runEnv(home),
-		Transport:   &transport.Client{Lookup: ts.Lookup, FindRelay: ts.Relay, Port: port},
-		Doorbell:    &transport.Doorbells{From: node, Bells: bells},
-		Door:        doorIdentity,
-		GiveUpAfter: cfg.GiveUp(),
+		Path:         filepath.Join(home, "mailbox.db"),
+		Node:         node,
+		Agents:       adapters,
+		RunEnv:       runEnv(home),
+		NewThreadDir: newThreadDir(cfg, home, userHome, runtime.GOOS),
+		UserHome:     userHome,
+		BafBinary:    binary,
+		BafHome:      commandHome,
+		Transport:    &transport.Client{Lookup: ts.Lookup, FindRelay: ts.Relay, Port: port},
+		Doorbell:     &transport.Doorbells{From: node, Bells: bells},
+		Door:         doorIdentity,
+		GiveUpAfter:  cfg.GiveUp(),
 	})
 	if err != nil {
 		localLn.Close()
