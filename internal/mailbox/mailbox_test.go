@@ -196,50 +196,18 @@ func TestRetryIsStoredOnce(t *testing.T) {
 	}
 }
 
-func TestContinueOnlySharedThreads(t *testing.T) {
+func TestContinueAnyThread(t *testing.T) {
 	h := newHarness(t)
 
-	// A thread the worker never shared with me is refused, not started fresh.
-	_, err := h.send(envelope.Envelope{Kind: envelope.Request, ToThread: "t1", Body: envelope.Body{Text: "sneak"}})
-	var rej *Rejection
-	if !errors.As(err, &rej) || !strings.Contains(rej.Reason, "never shared") {
-		t.Fatalf("err = %v, want a never-shared rejection", err)
-	}
-
-	// The worker's Result shares thread t1 with me, so now I may continue it.
+	// The receiver resumes the thread it is told to, whoever names it.
 	h.send(envelope.Envelope{Kind: envelope.Request, Body: envelope.Body{Text: "start"}})
 	thread := h.waitInbox("me", 1)[0].Message.FromThread
-	if _, err := h.send(envelope.Envelope{Kind: envelope.Request, ToThread: thread, Body: envelope.Body{Text: "more"}}); err != nil {
+	if _, err := h.send(envelope.Envelope{Kind: envelope.Request, FromAgent: "other", ToThread: thread, Body: envelope.Body{Text: "more"}}); err != nil {
 		t.Fatal(err)
 	}
-	h.waitInbox("me", 2)
+	h.waitInbox("other", 1)
 	if got := h.worker.jobs[1].ResumeThread; got != thread {
 		t.Fatalf("second run resumed %q, want %q", got, thread)
-	}
-
-	// Another sender may not use the thread the worker shared with me.
-	_, err = h.send(envelope.Envelope{Kind: envelope.Request, FromAgent: "other", ToThread: thread, Body: envelope.Body{Text: "x"}})
-	if !errors.As(err, &rej) {
-		t.Fatalf("other sender: err = %v, want rejection", err)
-	}
-}
-
-func TestSharedThreadExpires(t *testing.T) {
-	h := newHarness(t)
-	h.send(envelope.Envelope{Kind: envelope.Request, Body: envelope.Body{Text: "start"}})
-	thread := h.waitInbox("me", 1)[0].Message.FromThread
-
-	*h.clock = h.clock.Add(29 * 24 * time.Hour) // still inside 30 days
-	if _, err := h.send(envelope.Envelope{Kind: envelope.Request, ToThread: thread, Body: envelope.Body{Text: "a"}}); err != nil {
-		t.Fatal(err)
-	}
-	h.waitInbox("me", 2)
-
-	*h.clock = h.clock.Add(31 * 24 * time.Hour) // 31 days after the last use
-	_, err := h.send(envelope.Envelope{Kind: envelope.Request, ToThread: thread, Body: envelope.Body{Text: "b"}})
-	var rej *Rejection
-	if !errors.As(err, &rej) || !strings.Contains(rej.Reason, "expired") {
-		t.Fatalf("err = %v, want an expiry rejection", err)
 	}
 }
 

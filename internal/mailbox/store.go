@@ -43,15 +43,8 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS runs_by_state ON runs (state, agent, thread_id);
 
--- The "shared with" list: agent gave thread_id to
--- peer, so peer may continue that thread. Expires 30 days after last use.
-CREATE TABLE IF NOT EXISTS shared_threads (
-	agent     TEXT NOT NULL,
-	peer      TEXT NOT NULL,    -- node/agent
-	thread_id TEXT NOT NULL,
-	last_used INTEGER NOT NULL,
-	PRIMARY KEY (agent, peer, thread_id)
-);
+-- Thread sharing was removed; drop its table from older mailboxes.
+DROP TABLE IF EXISTS shared_threads;
 
 -- Messages this node's agents sent to other nodes, held here until the
 -- receiver's mailbox gives a receipt (ADR-0002: messages wait at the sender).

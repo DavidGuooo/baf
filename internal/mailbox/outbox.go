@@ -418,9 +418,9 @@ func (m *Mailbox) senderNoticeTx(tx *sql.Tx, orig envelope.Envelope, text string
 	var err error
 	if orig.Origin != "" {
 		n.To = orig.Origin
-		_, err = m.storeInboxTx(tx, n, Principal{Node: m.node, Agent: SystemAgent}, n.To, nil, false)
+		_, err = m.storeInboxTx(tx, n, Principal{Node: m.node, Agent: SystemAgent}, n.To, nil)
 	} else {
-		_, err = m.storeTx(tx, n, Principal{Node: m.node, Agent: SystemAgent}, false)
+		_, err = m.storeTx(tx, n, Principal{Node: m.node, Agent: SystemAgent})
 	}
 	return err
 }

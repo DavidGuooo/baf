@@ -46,7 +46,7 @@ func messageProperties() map[string]any {
 		"to":          stringProperty("Recipient: node/agent, or just agent for one on this Relay."),
 		"text":        stringProperty("Message text, at most 1 MiB in UTF-8; no files."),
 		"from_thread": stringProperty("Your own thread id, if you want answers routed back to that thread."),
-		"to_thread":   stringProperty("The recipient's thread id, only if that agent has shared it with you."),
+		"to_thread":   stringProperty("The recipient's thread id, to continue that thread: the from_thread of a message it sent."),
 	}
 }
 
@@ -58,7 +58,7 @@ func replyProperties() map[string]any {
 		"type": "string", "enum": []string{"completed", "failed", "rejected"}, "default": "completed",
 		"description": "completed: finished; failed: could not finish; rejected: refused before starting.",
 	}
-	props["to_thread"] = stringProperty("Recipient's shared thread id; defaults to the request's from_thread.")
+	props["to_thread"] = stringProperty("Recipient's thread id; defaults to the request's from_thread.")
 	return props
 }
 

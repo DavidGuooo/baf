@@ -219,7 +219,7 @@ Ask the Dot to check **inbox**, **read** the request, then **reply** with its id
 `reply_to`, the answer in `text`, and `state: "completed"`. `failed` and `rejected` are
 also supported; the default is `completed`. The recipient comes from the stored
 request, and `to_thread` defaults to that request's `from_thread`. `from_thread` is
-optional; an explicit `to_thread` must have been shared by the recipient.
+optional.
 
 **inbox** lists the latest 50 messages (`limit` for more, up to 500), read and unread,
 newest first, including answers to your requests; each says whether it was read. Listing does not mark mail read. On the

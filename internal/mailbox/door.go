@@ -110,12 +110,9 @@ func (m *Mailbox) FromDoor(doorAgent string, env envelope.Envelope) (Receipt, er
 	var r Receipt
 	err = m.inTx(func(tx *sql.Tx) (err error) {
 		if node == m.node {
-			r, err = m.acceptTx(tx, env, from)
+			r, err = m.storeTx(tx, env, from)
 		} else {
 			r, err = m.enqueueTx(tx, env, envelope.Address{Node: node, Agent: to.Agent})
-		}
-		if err == nil && !r.Duplicate && env.FromThread != "" {
-			err = m.shareTx(tx, doorAgent, to.String(), env.FromThread)
 		}
 		return err
 	})

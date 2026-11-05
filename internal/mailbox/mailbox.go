@@ -23,9 +23,6 @@ import (
 	"github.com/DavidGuooo/baf/internal/envelope"
 )
 
-// ThreadTTL is how long a shared thread stays usable without any message on it.
-const ThreadTTL = 30 * 24 * time.Hour
-
 // Principal is who the mailbox believes sent a message. For a local sender
 // it is this node plus the agent's name; for a remote one, the node comes
 // from Tailscale.
@@ -237,7 +234,7 @@ func (m *Mailbox) Send(env envelope.Envelope) (Receipt, error) {
 func (m *Mailbox) Accept(env envelope.Envelope, from Principal) (Receipt, error) {
 	var r Receipt
 	err := m.inTx(func(tx *sql.Tx) (err error) {
-		r, err = m.acceptTx(tx, env, from)
+		r, err = m.storeTx(tx, env, from)
 		return err
 	})
 	if err == nil {
@@ -251,7 +248,7 @@ func (m *Mailbox) Accept(env envelope.Envelope, from Principal) (Receipt, error)
 func (m *Mailbox) AcceptForwarded(env envelope.Envelope, from Principal, relay string) (Receipt, error) {
 	var r Receipt
 	err := m.inTx(func(tx *sql.Tx) (err error) {
-		r, err = m.acceptTx(tx, env, from)
+		r, err = m.storeTx(tx, env, from)
 		if err == nil && !r.Duplicate {
 			_, err = tx.Exec(`UPDATE messages SET forwarding_node = ? WHERE sender_node = ? AND id = ?`, relay, from.Node, env.ID)
 		}
@@ -277,35 +274,20 @@ func (m *Mailbox) sendTx(tx *sql.Tx, env envelope.Envelope) (Receipt, error) {
 	if err != nil {
 		return Receipt{}, err
 	}
-	var r Receipt
 	switch {
 	case to.Node == m.node:
-		r, err = m.acceptTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent})
+		return m.storeTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent})
 	case node == m.node:
-		r, err = m.storeInboxTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent}, to.String(), nil, true)
+		return m.storeInboxTx(tx, env, Principal{Node: m.node, Agent: env.FromAgent}, to.String(), nil)
 	default:
-		r, err = m.enqueueTx(tx, env, envelope.Address{Node: node, Agent: to.Agent})
+		return m.enqueueTx(tx, env, envelope.Address{Node: node, Agent: to.Agent})
 	}
-	if err != nil {
-		return Receipt{}, err
-	}
-	// The sender has now given its thread id to the receiver, so the
-	// receiver may continue that thread from here on.
-	if env.FromThread != "" {
-		if err := m.shareTx(tx, env.FromAgent, to.String(), env.FromThread); err != nil {
-			return Receipt{}, err
-		}
-	}
-	return r, nil
 }
 
-func (m *Mailbox) acceptTx(tx *sql.Tx, env envelope.Envelope, from Principal) (Receipt, error) {
-	return m.storeTx(tx, env, from, true)
-}
-
-// storeTx stores env for one of this node's agents. checkThread is false
-// only for baf's own notices, which may continue any of the agent's threads.
-func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, checkThread bool) (Receipt, error) {
+// storeTx stores env for one of this node's agents. Any sender may continue
+// any of the agent's threads with to_thread; the policy decides who may
+// message the agent at all.
+func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal) (Receipt, error) {
 	env.FromAgent = from.Agent
 	if err := env.Validate(); err != nil {
 		return Receipt{}, &Rejection{Reason: err.Error()}
@@ -315,18 +297,18 @@ func (m *Mailbox) storeTx(tx *sql.Tx, env envelope.Envelope, from Principal, che
 		if _, _, err := m.requireDoor(to.String()); err != nil {
 			return Receipt{}, err
 		}
-		return m.storeInboxTx(tx, env, from, to.String(), nil, checkThread)
+		return m.storeInboxTx(tx, env, from, to.String(), nil)
 	}
 	adapter, ok := m.agentFor(to.Agent)
 	if !ok {
 		return Receipt{}, reject("there is no agent %q on %s", to.Agent, m.node)
 	}
-	return m.storeInboxTx(tx, env, from, to.Agent, adapter, checkThread)
+	return m.storeInboxTx(tx, env, from, to.Agent, adapter)
 }
 
 // storeInboxTx uses the full address as the inbox name for a Door agent.
 // Its nil adapter means mail waits here until the Door agent reads it.
-func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal, inbox string, adapter agent.Adapter, checkThread bool) (Receipt, error) {
+func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal, inbox string, adapter agent.Adapter) (Receipt, error) {
 	// A retry of a message already stored gets the same receipt again.
 	var storedAt int64
 	var fromAgent string
@@ -340,12 +322,6 @@ func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Receipt{}, err
-	}
-
-	if env.ToThread != "" && checkThread {
-		if err := m.useThreadTx(tx, inbox, from.String(), env.ToThread); err != nil {
-			return Receipt{}, err
-		}
 	}
 
 	if err := m.placeFiles(from.Node, env.ID, env.Body.Files); err != nil {
@@ -368,36 +344,6 @@ func (m *Mailbox) storeInboxTx(tx *sql.Tx, env envelope.Envelope, from Principal
 		return Receipt{}, err
 	}
 	return Receipt{ID: env.ID, StoredAt: now}, nil
-}
-
-// shareTx records that agent gave threadID to peer, or refreshes its clock.
-func (m *Mailbox) shareTx(tx *sql.Tx, agentName, peer, threadID string) error {
-	_, err := tx.Exec(`INSERT INTO shared_threads (agent, peer, thread_id, last_used) VALUES (?, ?, ?, ?)
-		ON CONFLICT (agent, peer, thread_id) DO UPDATE SET last_used = excluded.last_used`,
-		agentName, peer, threadID, m.now().UnixMilli())
-	return err
-}
-
-// useThreadTx allows peer to continue agent's thread only if agent shared it
-// with peer within the last ThreadTTL, and resets that clock.
-func (m *Mailbox) useThreadTx(tx *sql.Tx, agentName, peer, threadID string) error {
-	var last int64
-	err := tx.QueryRow(`SELECT last_used FROM shared_threads WHERE agent = ? AND peer = ? AND thread_id = ?`,
-		agentName, peer, threadID).Scan(&last)
-	if errors.Is(err, sql.ErrNoRows) {
-		return reject("%s never shared thread %s with %s; leave out to_thread to start a new thread",
-			agentName, threadID, peer)
-	}
-	if err != nil {
-		return err
-	}
-	if m.now().Sub(time.UnixMilli(last)) > ThreadTTL {
-		return reject("thread %s of %s expired after 30 days without use; leave out to_thread to start a new thread",
-			threadID, agentName)
-	}
-	_, err = tx.Exec(`UPDATE shared_threads SET last_used = ? WHERE agent = ? AND peer = ? AND thread_id = ?`,
-		m.now().UnixMilli(), agentName, peer, threadID)
-	return err
 }
 
 // Run hands waiting messages to their agents and pushes outgoing ones until
@@ -652,7 +598,6 @@ func (m *Mailbox) endRunTx(tx *sql.Tx, runID int64, agentName, threadID string, 
 
 // recover settles runs a crash left open: the mailbox knows only that they
 // started, so each becomes "unknown" and is never run again.
-// It also forgets shared threads that have expired.
 func (m *Mailbox) recover() error {
 	return m.inTx(func(tx *sql.Tx) error {
 		rows, err := tx.Query(`SELECT r.id, r.agent, r.thread_id, m.sender_node, m.envelope
@@ -692,9 +637,7 @@ func (m *Mailbox) recover() error {
 				return err
 			}
 		}
-		cutoff := m.now().Add(-ThreadTTL).UnixMilli()
-		_, err = tx.Exec(`DELETE FROM shared_threads WHERE last_used < ?`, cutoff)
-		return err
+		return nil
 	})
 }
 

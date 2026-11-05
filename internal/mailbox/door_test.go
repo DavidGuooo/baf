@@ -173,12 +173,12 @@ func TestDoorRequestResultAndThreads(t *testing.T) {
 	}
 	_, err = mb.FromDoor("openai/dot", envelope.Envelope{Kind: envelope.Notice, To: "box/codex", ToThread: res.FromThread})
 	if err != nil {
-		t.Fatalf("continue shared Codex thread: %v", err)
+		t.Fatalf("continue Codex thread: %v", err)
 	}
-	_, err = mb.FromDoor("openai/dot", envelope.Envelope{Kind: envelope.Notice, To: "box/codex", ToThread: "unshared"})
-	wantDoorRejection(t, err, "never shared thread")
 	_, err = mb.Send(envelope.Envelope{Kind: envelope.Notice, FromAgent: "me", To: "openai/dot", ToThread: "dot-thread"})
-	wantDoorRejection(t, err, "never shared thread")
+	if err != nil {
+		t.Fatalf("continue the Dot's thread: %v", err)
+	}
 	out, err := mb.Outbox(true, 10)
 	if err != nil || len(out) != 0 {
 		t.Fatalf("outbox = %+v, err = %v", out, err)
