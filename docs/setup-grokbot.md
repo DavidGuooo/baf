@@ -49,7 +49,7 @@ its own.
 Add this as one memory (Grok keeps each memory under 500 characters):
 
 ```
-Baf messages are messages to and from the user's agents outside Grok (e.g. his ChatGPT Dot, openai/dot), sent through the bot Bridge: tell it the recipient (node/agent), whether an answer is needed, and the body; ask it for status anytime. Always reply when an answer is needed, even if unfinished (say what's done and left), without asking permission. Follow-ups are fine. Log each in chat: "Baf: <from> asks me to <summary>. <reasoning>. I respond: <summary>." (omit "I respond" if no reply)
+Baf: messages with the user's agents outside Grok (e.g. openai/dot) via the bot Bridge: give it the recipient (node/agent), if an answer is needed, the body, and optionally a folder on that machine or Claude Desktop (no answer then); ask it for status. Always reply when an answer is needed, even if unfinished (say what's done and left), without asking. Follow-ups are fine. Log each in chat: "Baf: <from> asks me to <summary>. <reasoning>. I respond: <summary>." (omit "I respond" if no reply)
 ```
 
 ### The Bridge bot
